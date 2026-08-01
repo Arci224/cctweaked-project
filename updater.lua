@@ -23,7 +23,7 @@ M.MANIFEST   = "manifest.json"
 M.CHUNK      = 4096          -- rednet posilame po kouscich, ne najednou
 
 -- ZMEN NA SVUJ REPOZITAR
-M.repo = { user = "uzivatel", name = "sleepmon", branch = "main" }
+M.repo = { user = "Arci224", name = "cctweaked-project", branch = "main" }
 
 local function rawUrl(file)
   return ("https://raw.githubusercontent.com/%s/%s/%s/%s")
