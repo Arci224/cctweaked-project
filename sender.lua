@@ -279,6 +279,7 @@ local function status()
     term.setTextColor(colors.lightGray)
   end
   print("Nazev:    " .. label .. "  (ID " .. os.getComputerID() .. ")")
+  print("Verze:    " .. (upd and upd.localVersion() or "bez updateru"))
   print("Modem:    " .. (wireless and "bezdratovy OK" or "jen wired (!)"))
 
   if det then
@@ -336,7 +337,10 @@ while running do
       if not rdr then rdr, rdrName = findReader() end
     end
 
-    local payload = { label = label, alias = alias }
+    local payload = {
+      label = label, alias = alias,
+      ver = upd and upd.localVersion() or nil,
+    }
     local any = false
 
     if det then
@@ -391,9 +395,38 @@ while running do
 
   elseif ev[1] == "rednet_message" then
     local _, msg, proto = ev[2], ev[3], ev[4]
+
     if proto == RN_CMD and type(msg) == "table" and msg.cmd == "setLimit" then
       local v = tonumber(msg.value)
       if v and det then call(det, "setTransferRateLimit", math.floor(v)) end
+
+    elseif upd and proto == upd.PROTO and type(msg) == "table"
+           and msg.cmd == "update" then
+      -- PC1 hlasi novou verzi; stahujeme si ji sami, at si to muze
+      -- kazdy pocitac odbavit vlastnim tempem
+      local want = tonumber(msg.version) or 0
+      if want > upd.localVersion() then
+        log("info", "prichozi vyzva na verzi " .. want)
+
+        -- stejne rozlozeni jako pri bootu, at deset stroju
+        -- nezavali PC1 naraz
+        local wait = os.getComputerID() % 12
+        if wait > 0 then sleep(wait) end
+
+        local ver, err, changed = upd.pullRednet(10)
+        if err then
+          log("error", "update selhal: " .. tostring(err))
+        elseif changed then
+          log("ok", "verze " .. tostring(ver) .. ", restartuji")
+          sleep(1)
+          os.reboot()
+        end
+
+        -- sleep a rednet.receive spolykaly nase timery
+        timer = os.startTimer(INTERVAL)
+        uiTimer = os.startTimer(2)
+        status()
+      end
     end
 
   elseif ev[1] == "peripheral" or ev[1] == "peripheral_detach" then

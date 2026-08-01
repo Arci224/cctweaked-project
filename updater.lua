@@ -211,32 +211,43 @@ end
 -- OSTATNI: STAZENI OD PC1
 --=====================================================================
 
+-- Na protokolu se potkavaji i dotazy ostatnich pocitacu, takze cizi
+-- zpravy preskakujeme misto toho, abychom na nich prenos ukoncili.
 local function receiveFile(name, timeout)
   local parts, total, have = {}, nil, 0
-  while true do
-    local _, r = rednet.receive(M.PROTO, timeout or 10)
-    if type(r) ~= "table" or r.file ~= name then
-      return nil, "prenos se rozpadl"
+  local deadline = os.clock() + (timeout or 20)
+
+  while os.clock() < deadline do
+    local _, r = rednet.receive(M.PROTO, 5)
+    if type(r) == "table" and r.file == name then
+      if r.err then return nil, r.err end
+      if r.part and not parts[r.part] then
+        parts[r.part] = r.data
+        have = have + 1
+      end
+      total = r.total
+      if total and have >= total then return table.concat(parts) end
     end
-    if r.err then return nil, r.err end
-    if r.part and not parts[r.part] then
-      parts[r.part] = r.data
-      have = have + 1
-    end
-    total = r.total
-    if total and have >= total then break end
   end
-  return table.concat(parts)
+  return nil, "vyprsel cas prenosu"
 end
 
 -- vraci: verze, chyba, doslo_ke_zmene
 function M.pullRednet(timeout)
   rednet.broadcast({ cmd = "manifest" }, M.PROTO)
 
-  local id, msg = rednet.receive(M.PROTO, timeout or 5)
-  if not id or type(msg) ~= "table" or not tonumber(msg.version) then
-    return nil, "PC1 neodpovida"
-  end
+  -- cekame na zpravu, ktera opravdu nese verzi; dotazy jinych
+  -- pocitacu chodi po stejnem protokolu a nesmi nas splest
+  local deadline = os.clock() + (timeout or 5)
+  local id, msg
+  repeat
+    local rid, rmsg = rednet.receive(M.PROTO, 1)
+    if rid and type(rmsg) == "table" and tonumber(rmsg.version) then
+      id, msg = rid, rmsg
+    end
+  until id or os.clock() > deadline
+
+  if not id then return nil, "PC1 neodpovida" end
 
   local newVer = tonumber(msg.version)
   if newVer <= M.localVersion() then return newVer, nil, false end

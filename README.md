@@ -72,8 +72,21 @@ nebo `remote`.
 1. Uprav soubory
 2. **Zvyš `version` v `manifest.json`** — bez toho se nic nestáhne
 3. `git push`
-4. Na PC1 stiskni *Aktualizovat* v záložce Log (nebo počkej na reboot)
-5. Vzdálené počítače si novou verzi vezmou při svém dalším startu
+4. Na PC1 v záložce Log stiskni **Stahnout** — stáhne z GitHubu a rovnou
+   rozešle výzvu ostatním
+5. Počkej, až v záložce **Zarizeni** budou u všech počítačů stejná
+   čísla verzí (`rednet PC7 v5`)
+6. Teprve pak **Restart** na PC1
+
+Pořadí není libovolné: vzdálené počítače si soubory tahají **z PC1**,
+takže musí zůstat naběhnuté, dokud se neaktualizují. Proto se PC1
+nerestartuje sám.
+
+Tlačítko **Rozeslat** pošle výzvu znovu bez stahování — na počítač,
+který byl zrovna offline nebo v nenačteném chunku.
+
+Každý vzdálený počítač si počká `ID % 12` sekund, než si o soubory
+řekne. Deset strojů se tak neslije do jedné dávky.
 
 ## Pojistky proti rozbití
 
@@ -115,8 +128,9 @@ na jednotce nezávislé.
 - Bouřka ve vanille dovolí spát i přes den; CC nemá API na počasí,
   takže to hodiny nepoznají.
 - Font CC:Tweaked neumí českou diakritiku, texty jsou bez háčků.
-- Odhad dotěžení quarry je lineární extrapolace. Horní vrstvy jsou
-  plné vzduchu a jdou rychleji než kámen dole, takže první polovina
-  odhadu je optimistická.
-- Když quarry nemá nastavené `digMinY`, spodní hranice se odhaduje
-  (výchozí −64) a přímo škáluje celkový objem.
+- Odhad dotěžení quarry je lineární extrapolace z posledních 5 minut.
+  Sedí, dokud je tempo konstantní — vrstvy s velkým podílem vzduchu
+  (jeskyně, povrch) proletí rychleji a odhad se pak prodlouží.
+- Když quarry nemá nastavené `digMinY`, spodní hranice se odhaduje a
+  přímo škáluje celkový objem. **Overworld má dno v −64, Nether a End
+  v 0** — nastavuje se pro každý stroj zvlášť na jeho detailu.

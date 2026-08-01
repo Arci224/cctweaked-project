@@ -41,9 +41,11 @@ local cfg = {
   lowEnergyAlarm = true,      -- pipat pri nizkem stavu baterie
   lowEnergyPct  = 20,         -- prah v procentech
   lowInterval   = 30,         -- realne sekundy mezi varovnymi pipnutimi
-  -- Kam az quarry kope, kdyz nema nastaveny digMinY. Vychozi je dno
-  -- sveta v 1.21; da se prepnout primo na strance Quarry.
+  -- Kam az quarry kope, kdyz nema nastaveny digMinY. Overworld ma dno
+  -- v -64, Nether a End v 0 - proto je to per stroj, ne globalne.
+  -- Globalni hodnota slouzi jen jako vychozi pro nove nalezene.
   quarryBottomY = -64,
+  quarryBottom  = {},   -- [klic zdroje] = spodni Y
   -- evidence zarizeni, ktera uz nekdy byla videna; diky ni poznáme
   -- rozdil mezi "nikdy tu nebylo" a "vypadlo" (prezije restart)
   expected      = {},         -- [key] = {kind=, label=, name=, id=}
@@ -346,7 +348,7 @@ local REMOTE_TIMEOUT = 6000             -- ms bez zpravy = zdroj je mrtvy
 -- byla pripojena. devices.lastSeen je runtime cast (kdy naposledy
 -- odpovedelo). Rozdil obojiho = "melo by tu byt, ale neni".
 
-local devices = { lastSeen = {} }
+local devices = { lastSeen = {}, version = {} }   -- version je podle ID pocitace
 
 local function registerDevice(key, info)
   local e = cfg.expected[key]
@@ -830,13 +832,13 @@ local function parseQuarry(data, states)
 end
 
 -- vraci: hotovo, celkem, sirka, hloubka, poc.vrstev, spodni Y
-local function quarryProgress(q)
+local function quarryProgress(q, key)
   if not q then return nil end
   -- sx/sz zamerne nejsou W/D, aby to neprekrylo rozmery monitoru
   local sx = (q.maxX or 0) - (q.minX or 0) + 1
   local sz = (q.maxZ or 0) - (q.minZ or 0) + 1
   local top = q.maxY
-  local bot = q.digMinY or cfg.quarryBottomY
+  local bot = q.digMinY or (key and cfg.quarryBottom[key]) or cfg.quarryBottomY
   if not (top and bot) or sx <= 0 or sz <= 0 or top < bot then return nil end
 
   local layers = top - bot + 1
@@ -915,7 +917,7 @@ local function updateOne(src, now)
   if not q then return end
   markSeen(src.key)
 
-  local done = quarryProgress(q)
+  local done = quarryProgress(q, src.key)
   if not done then return end
 
   h.samples[#h.samples + 1] = { t = now, done = done }
@@ -988,7 +990,7 @@ end
 
 local function quarryEta(key)
   local h = quarry.hist[key]
-  local done, total = quarryProgress(h and h.cur)
+  local done, total = quarryProgress(h and h.cur, key)
   if not done then return nil end
   local r = quarryRate(key, quarry.longWin) or quarryRate(key, quarry.shortWin)
   if not r or r <= 0 then return nil end
@@ -1003,6 +1005,7 @@ local function onRednet(id, msg, proto)
   local now = os.epoch("utc")
   -- alias nastaveny primo na tom pocitaci ma prednost pred jeho nazvem
   local name = msg.alias or msg.label or ("PC" .. id)
+  if tonumber(msg.ver) then devices.version[id] = tonumber(msg.ver) end
 
   if msg.rate ~= nil then
     local known = energy.remotes[id] ~= nil
@@ -1640,7 +1643,7 @@ local function pageQuarry()
       end
 
       local h = quarry.hist[s.key]
-      local done, total = quarryProgress(h and h.cur)
+      local done, total = quarryProgress(h and h.cur, s.key)
       -- sloupce: nazev | procenta | pruh | odhad vpravo
       local nameW = 11
       text(CX, y, s.label:sub(1, nameW), colors.white, BG)
@@ -1693,7 +1696,7 @@ local function pageQuarry()
   textRight(CX, CW, y, q.state, stCol, BG)
   y = y + 1
 
-  local done, total, sx, sz, layers, bot = quarryProgress(q)
+  local done, total, sx, sz, layers, bot = quarryProgress(q, src.key)
   if not done then
     text(CX, y, "Neznama oblast tezby", BAD, BG)
     return
@@ -1755,17 +1758,20 @@ local function pageQuarry()
     y = y + 1
   end
 
-  -- dno je odhad, dokud ho quarry nema nastaveny sama
+  -- Dno je odhad, dokud ho quarry nema nastavene sama. Overworld ma
+  -- dno v -64, Nether a End v 0 - proto se drzi zvlast pro kazdy stroj.
   if y <= H - 1 and not q.digMinY then
-    text(CX, y, "Dno (odhad): " .. cfg.quarryBottomY, MUTED, BG)
-    button(CX + 20, y, 5, 1, "-16", PANEL, colors.white, function()
-      cfg.quarryBottomY = math.max(-64, cfg.quarryBottomY - 16)
-      saveConfig(); quarry.hist = {}
-    end)
-    button(CX + 26, y, 5, 1, "+16", PANEL, colors.white, function()
-      cfg.quarryBottomY = math.min((q.maxY or 320) - 1, cfg.quarryBottomY + 16)
-      saveConfig(); quarry.hist = {}
-    end)
+    local function setBottom(v)
+      cfg.quarryBottom[src.key] = math.max(-64, math.min((q.maxY or 320) - 1, v))
+      saveConfig()
+      quarry.hist[src.key] = nil   -- zmenil se celkovy objem
+    end
+
+    text(CX, y, "Dno: " .. bot, MUTED, BG)
+    button(CX + 9,  y, 5, 1, "-64", PANEL, colors.white, function() setBottom(-64) end)
+    button(CX + 15, y, 4, 1, "0",   PANEL, colors.white, function() setBottom(0) end)
+    button(CX + 20, y, 3, 1, "-",   PANEL, colors.white, function() setBottom(bot - 8) end)
+    button(CX + 24, y, 3, 1, "+",   PANEL, colors.white, function() setBottom(bot + 8) end)
   end
 end
 
@@ -1798,8 +1804,19 @@ local function pageLog()
     y = y + 1
   end
 
-  local bw = math.floor((CW - 1) / 2)
-  button(CX, H, bw, 1, "Aktualizovat", colors.blue, colors.white, function()
+  -- Rozeslani je zamerne oddelene od restartu PC1. Vzdalene pocitace
+  -- si soubory tahaji prave z PC1, takze musi zustat nabehnute,
+  -- dokud se neaktualizuji - restart az nakonec, rucne.
+  local function broadcastUpdate()
+    if not updater then return end
+    pcall(rednet.broadcast,
+      { cmd = "update", version = updater.localVersion() }, updater.PROTO)
+    addLog({ level = "info", from = "PC1",
+             text = "rozeslana vyzva na verzi " .. updater.localVersion() })
+  end
+
+  local bw = math.floor((CW - 2) / 3)
+  button(CX, H, bw, 1, "Stahnout", colors.blue, colors.white, function()
     if not updater then toast("updater chybi"); return end
     if not updater.httpAvailable() then toast("HTTP je vypnute"); return end
 
@@ -1810,17 +1827,24 @@ local function pageLog()
       addLog({ level = "error", from = "PC1", text = "update: " .. tostring(err) })
       toast("chyba, viz log")
     elseif changed then
-      addLog({ level = "ok", from = "PC1", text = "verze " .. tostring(ver) })
-      toast("verze " .. tostring(ver) .. ", restart")
-      draw()
-      sleep(1)
-      os.reboot()
+      addLog({ level = "ok", from = "PC1", text = "stazena verze " .. tostring(ver) })
+      broadcastUpdate()
+      toast("verze " .. tostring(ver) .. ", rozeslano")
     else
       toast("uz je aktualni")
     end
   end)
-  button(CX + bw + 1, H, bw, 1, "Smazat log", colors.gray, colors.white, function()
-    logs.lines = {}
+
+  button(CX + bw + 1, H, bw, 1, "Rozeslat", colors.blue, colors.white, function()
+    if not updater then toast("updater chybi"); return end
+    broadcastUpdate()
+    toast("vyzva odeslana")
+  end)
+
+  button(CX + 2 * bw + 2, H, bw, 1, "Restart", colors.gray, colors.white, function()
+    draw()
+    sleep(0.5)
+    os.reboot()
   end)
 end
 
@@ -1828,6 +1852,9 @@ local function pageDevices()
   local y = CY
 
   text(CX, y, "Zarizeni", colors.white, BG)
+  if updater then
+    text(CX + 9, y, "v" .. updater.localVersion(), colors.gray, BG)
+  end
   local probs = problemCount()
   textRight(CX, CW, y, probs == 0 and "vse OK" or (probs .. "x problem"),
     probs == 0 and OK or BAD, BG)
@@ -1888,6 +1915,11 @@ local function pageDevices()
       else
         detail = "rednet PC" .. tostring(e.id)
       end
+
+      -- verzi hlasi vzdaleny pocitac v kazde zprave; kdyz nesedi
+      -- s PC1, je videt, ze mu update jeste nedosel
+      local v = e.id and devices.version[e.id]
+      if v then detail = detail .. " v" .. v end
       if st ~= "OK" and age then detail = detail .. " " .. fmtDuration(age) end
       if row(tostring(e.label), detail, st, col) then shown = shown + 1 else break end
     end
