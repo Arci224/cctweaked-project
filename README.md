@@ -85,6 +85,62 @@ nerestartuje sám.
 Tlačítko **Rozeslat** pošle výzvu znovu bez stahování — na počítač,
 který byl zrovna offline nebo v nenačteném chunku.
 
+### Co se loguje
+
+Celý průběh aktualizace, po krocích. Šedě jsou `debug` řádky, bíle
+`info`, zeleně `ok`, červeně chyby.
+
+```
+03:11 PC1:        GitHub hlasi v7, 6 souboru
+03:11 PC1:        stahuji boot.lua (1/6)
+03:11 PC1:        boot.lua: 4812 B
+03:11 PC1:        stazeno vse, zapisuji
+03:11 PC1:        zapsano 6 souboru, v7
+03:11 PC1:        vyzva -> v7
+03:11 Nether:     vyzva v7, stahuji
+03:11 Nether:     zadam PC1 o manifest, mam v6
+03:11 PC1:        PC7 zada manifest -> v7, 6 souboru
+03:11 Nether:     PC1 hlasi v7, 6 souboru
+03:11 Nether:     zadam sender.lua (4/6)
+03:11 PC1:        PC7 <- sender.lua (12148 B, 3 casti)
+03:11 Nether:     sender.lua prijato, 12148 B
+03:11 Nether:     prijato vse, instaluji 6 souboru
+03:11 Nether:     zapsan sender.lua
+03:11 Nether:     instalace hotova, v7
+03:11 Nether:     v7, restart
+03:12 Nether:     boot: rezim remote, v7
+03:12 Nether:     spoustim sender.lua
+03:12 Nether:     sender v7 bezi +det +qry
+03:12 Nether:     v6 -> v7
+```
+
+Vidíš tedy obě strany přenosu — kdo co žádal, kolik bajtů přišlo,
+který soubor se zapsal a čím to skončilo. Když se instalace zastaví na
+syntaktické chybě, poslední řádek je červený a řekne u kterého souboru.
+
+Vzdálený počítač vystupuje pod svým aliasem, ne pod názvem počítače.
+
+Buffer drží 300 řádků.
+
+### Zpětná vazba
+
+- V záhlaví záložky Log je `v5  2/3 hotovo` — kolik vzdálených počítačů
+  už hlásí stejnou verzi jako PC1. Zezelená, až budou všechny.
+- Když počítač verzi změní, objeví se v logu řádek `Nether main:
+  v4 -> v5`.
+- V záložce Zarizeni je verze u každého počítače. **`v?` znamená, že
+  verzi vůbec nehlásí** — běží na kódu starším než v5.
+
+### První nasazení push updatu
+
+Zpracování výzvy je novinka verze 5. Počítač se starším kódem ji
+ignoruje, protože v sobě nemá řádek, který by ji poslouchal — push
+mechanismus se nedá zavést pushem.
+
+Napoprvé tedy jdi na každý vzdálený počítač a dej `reboot`. Při startu
+si soubory vyžádá sám (to umí i starý `boot.lua`). Od té chvíle už
+stačí *Rozeslat* z PC1.
+
 Každý vzdálený počítač si počká `ID % 12` sekund, než si o soubory
 řekne. Deset strojů se tak neslije do jedné dávky.
 

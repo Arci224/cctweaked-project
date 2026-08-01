@@ -79,6 +79,10 @@ if not upd then
 elseif not hasModem and role ~= "main" then
   say(colors.orange, "Bez modemu se update stahnout neda.")
 else
+  if hasModem then
+    pcall(upd.log, "info", ("boot: rezim %s, v%d"):format(role, upd.localVersion()))
+  end
+
   say(colors.lightGray, "Verze: " .. upd.localVersion())
   local ver, err, changed
 
@@ -112,6 +116,7 @@ else
     os.reboot()
   else
     say(colors.lightGray, "Aktualni verze.")
+    if hasModem then pcall(upd.log, "debug", "boot: bez zmeny") end
   end
 end
 
@@ -122,6 +127,10 @@ end
 if not fs.exists(app) then
   say(colors.red, app .. " chybi. Nemam co spustit.")
   return
+end
+
+if upd and hasModem then
+  pcall(upd.log, "info", "spoustim " .. app)
 end
 
 local fn, loadErr = loadfile(app, nil, _G)

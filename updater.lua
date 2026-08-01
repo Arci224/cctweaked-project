@@ -115,14 +115,21 @@ end
 --=====================================================================
 
 M.logLocal = nil   -- volitelna funkce pro vypis i u sebe
+M.logName  = nil   -- prepise odesilatele v logu (napr. aliasem)
 
 function M.log(level, text)
   local line = { level = level or "info", text = tostring(text),
-                 from = os.getComputerLabel() or ("PC" .. os.getComputerID()),
+                 from = M.logName or os.getComputerLabel()
+                        or ("PC" .. os.getComputerID()),
                  id = os.getComputerID() }
   pcall(rednet.broadcast, line, M.LOG_PROTO)
   if M.logLocal then pcall(M.logLocal, line) end
 end
+
+-- zamerne ne "err", to se pouziva jako nazev lokalni promenne nize
+local function dbg(t)    M.log("debug", t) end
+local function info(t)   M.log("info", t)  end
+local function logErr(t) M.log("error", t) end
 
 --=====================================================================
 -- PC1: STAHOVANI Z GITHUBU
@@ -139,26 +146,42 @@ function M.pullGithub(force)
   end
 
   local newVer = tonumber(m.version)
+  local files = m.files or {}
+  info(("GitHub hlasi v%d, %d souboru"):format(newVer, #files))
+
   if not force and newVer <= M.localVersion() then
+    dbg("mam v" .. M.localVersion() .. ", nestahuji")
     return newVer, nil, false
   end
 
   -- nejdriv stahnout vse, teprve pak zapisovat; pri vypadku v pulce
   -- by jinak zustala smes stare a nove verze
   local staged = {}
-  for _, name in ipairs(m.files or {}) do
+  for i, name in ipairs(files) do
+    dbg(("stahuji %s (%d/%d)"):format(name, i, #files))
     local c, e = M.fetch(rawUrl(name))
-    if not c then return nil, name .. ": " .. tostring(e) end
+    if not c then
+      logErr(name .. ": " .. tostring(e))
+      return nil, name .. ": " .. tostring(e)
+    end
+    dbg(("%s: %d B"):format(name, #c))
     staged[name] = c
   end
 
+  dbg("stazeno vse, zapisuji")
+  local written = 0
   for name, c in pairs(staged) do
     local okw, e = M.safeWrite(name, c)
-    if not okw then return nil, name .. ": " .. tostring(e) end
+    if not okw then
+      logErr(name .. ": " .. tostring(e))
+      return nil, name .. ": " .. tostring(e)
+    end
+    written = written + 1
   end
 
   M.safeWrite(M.MANIFEST, body)
   M.setLocalVersion(newVer)
+  info(("zapsano %d souboru, v%d"):format(written, newVer))
   return newVer, nil, true
 end
 
@@ -176,6 +199,8 @@ function M.serve(id, msg, proto)
     for _, n in ipairs(M.fileList()) do
       if fs.exists(n) then files[#files + 1] = n end
     end
+    dbg(("PC%d zada manifest -> v%d, %d souboru")
+      :format(id, M.localVersion(), #files))
     rednet.send(id, { version = M.localVersion(), files = files }, M.PROTO)
     return true
   end
@@ -190,11 +215,13 @@ function M.serve(id, msg, proto)
     local content = allowed and readFile(msg.file) or nil
 
     if not content then
+      logErr(("PC%d zada %s - nemam"):format(id, tostring(msg.file)))
       rednet.send(id, { file = msg.file, err = "neni k dispozici" }, M.PROTO)
       return true
     end
 
     local total = math.max(1, math.ceil(#content / M.CHUNK))
+    dbg(("PC%d <- %s (%d B, %d casti)"):format(id, msg.file, #content, total))
     for i = 1, total do
       rednet.send(id, {
         file = msg.file, part = i, total = total,
@@ -234,6 +261,7 @@ end
 
 -- vraci: verze, chyba, doslo_ke_zmene
 function M.pullRednet(timeout)
+  dbg("zadam PC1 o manifest, mam v" .. M.localVersion())
   rednet.broadcast({ cmd = "manifest" }, M.PROTO)
 
   -- cekame na zpravu, ktera opravdu nese verzi; dotazy jinych
@@ -247,25 +275,46 @@ function M.pullRednet(timeout)
     end
   until id or os.clock() > deadline
 
-  if not id then return nil, "PC1 neodpovida" end
+  if not id then
+    logErr("PC1 neodpovida na dotaz o manifest")
+    return nil, "PC1 neodpovida"
+  end
 
   local newVer = tonumber(msg.version)
-  if newVer <= M.localVersion() then return newVer, nil, false end
+  local files = msg.files or {}
+  info(("PC%d hlasi v%d, %d souboru"):format(id, newVer, #files))
+
+  if newVer <= M.localVersion() then
+    dbg("uz mam v" .. M.localVersion() .. ", nestahuji")
+    return newVer, nil, false
+  end
 
   local staged = {}
-  for _, name in ipairs(msg.files or {}) do
+  for i, name in ipairs(files) do
+    dbg(("zadam %s (%d/%d)"):format(name, i, #files))
     rednet.send(id, { cmd = "get", file = name }, M.PROTO)
     local c, e = receiveFile(name)
-    if not c then return nil, name .. ": " .. tostring(e) end
+    if not c then
+      logErr(name .. ": " .. tostring(e))
+      return nil, name .. ": " .. tostring(e)
+    end
+    dbg(("%s prijato, %d B"):format(name, #c))
     staged[name] = c
   end
 
+  info(("prijato vse, instaluji %d souboru"):format(#files))
   for name, c in pairs(staged) do
     local okw, e = M.safeWrite(name, c)
-    if not okw then return nil, name .. ": " .. tostring(e) end
+    if not okw then
+      -- sem se dostaneme hlavne pri syntakticke chybe v novem kodu
+      logErr("instalace " .. name .. ": " .. tostring(e))
+      return nil, name .. ": " .. tostring(e)
+    end
+    dbg("zapsan " .. name)
   end
 
   M.setLocalVersion(newVer)
+  info(("instalace hotova, v%d"):format(newVer))
   return newVer, nil, true
 end
 

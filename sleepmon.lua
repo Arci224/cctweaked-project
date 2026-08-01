@@ -271,7 +271,7 @@ end
 -- LOG ZE VZDALENYCH POCITACU
 --=====================================================================
 
-local logs = { lines = {}, max = 200, unseen = 0, errors = 0 }
+local logs = { lines = {}, max = 300, unseen = 0, errors = 0 }
 
 local function addLog(entry)
   if type(entry) ~= "table" then return end
@@ -1005,7 +1005,16 @@ local function onRednet(id, msg, proto)
   local now = os.epoch("utc")
   -- alias nastaveny primo na tom pocitaci ma prednost pred jeho nazvem
   local name = msg.alias or msg.label or ("PC" .. id)
-  if tonumber(msg.ver) then devices.version[id] = tonumber(msg.ver) end
+  -- Zmenu verze hlasime do logu - je to jedina primá zpetná vazba,
+  -- ze si vzdaleny pocitac update opravdu stahl.
+  local rv = tonumber(msg.ver)
+  if rv and devices.version[id] ~= rv then
+    if devices.version[id] then
+      addLog({ level = "ok", from = name,
+               text = "v" .. devices.version[id] .. " -> v" .. rv })
+    end
+    devices.version[id] = rv
+  end
 
   if msg.rate ~= nil then
     local known = energy.remotes[id] ~= nil
@@ -1779,9 +1788,25 @@ local function pageLog()
   local y = CY
 
   text(CX, y, "Log", colors.white, BG)
-  textRight(CX, CW, y,
-    updater and ("verze " .. updater.localVersion()) or "bez updateru",
-    MUTED, BG)
+
+  -- kolik vzdalenych pocitacu uz ma stejnou verzi jako PC1
+  if updater then
+    local mine = updater.localVersion()
+    local seen, total, done = {}, 0, 0
+    for _, e in pairs(cfg.expected) do
+      if e.id and not seen[e.id] then
+        seen[e.id] = true
+        total = total + 1
+        if devices.version[e.id] == mine then done = done + 1 end
+      end
+    end
+    local s = "v" .. mine
+    if total > 0 then s = s .. "  " .. done .. "/" .. total .. " hotovo" end
+    textRight(CX, CW, y, s,
+      (total > 0 and done == total) and OK or MUTED, BG)
+  else
+    textRight(CX, CW, y, "bez updateru", MUTED, BG)
+  end
   y = y + 1
 
   logs.unseen = 0
@@ -1799,7 +1824,8 @@ local function pageLog()
     local col = colors.lightGray
     if l.level == "error" then col = colors.red
     elseif l.level == "warn" then col = colors.orange
-    elseif l.level == "ok" then col = colors.green end
+    elseif l.level == "ok" then col = colors.green
+    elseif l.level == "debug" then col = colors.gray end
     text(CX, y, (l.clock .. " " .. l.from .. ": " .. l.text):sub(1, CW), col, BG)
     y = y + 1
   end
@@ -1812,7 +1838,7 @@ local function pageLog()
     pcall(rednet.broadcast,
       { cmd = "update", version = updater.localVersion() }, updater.PROTO)
     addLog({ level = "info", from = "PC1",
-             text = "rozeslana vyzva na verzi " .. updater.localVersion() })
+             text = "vyzva -> v" .. updater.localVersion() })
   end
 
   local bw = math.floor((CW - 2) / 3)
@@ -1827,7 +1853,7 @@ local function pageLog()
       addLog({ level = "error", from = "PC1", text = "update: " .. tostring(err) })
       toast("chyba, viz log")
     elseif changed then
-      addLog({ level = "ok", from = "PC1", text = "stazena verze " .. tostring(ver) })
+      addLog({ level = "ok", from = "PC1", text = "stazeno v" .. tostring(ver) })
       broadcastUpdate()
       toast("verze " .. tostring(ver) .. ", rozeslano")
     else
@@ -1918,8 +1944,9 @@ local function pageDevices()
 
       -- verzi hlasi vzdaleny pocitac v kazde zprave; kdyz nesedi
       -- s PC1, je videt, ze mu update jeste nedosel
-      local v = e.id and devices.version[e.id]
-      if v then detail = detail .. " v" .. v end
+      -- "v?" znamena, ze pocitac verzi vubec nehlasi, tedy bezi na
+      -- starem kodu, ktery ji jeste neposilal
+      if e.id then detail = detail .. " v" .. (devices.version[e.id] or "?") end
       if st ~= "OK" and age then detail = detail .. " " .. fmtDuration(age) end
       if row(tostring(e.label), detail, st, col) then shown = shown + 1 else break end
     end

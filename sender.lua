@@ -231,6 +231,8 @@ local function writeAlias(a)
 end
 
 local alias = readAlias()
+-- v logu na PC1 pak vystupujeme pod aliasem, ne pod nazvem pocitace
+if upd then upd.logName = alias end
 
 -- hlasime jen zmeny stavu, ne kazdy tik - jinak by log zaplavilo
 local function watch(name, present, was)
@@ -315,9 +317,9 @@ local function status()
 end
 
 status()
-log("info", "vysilac start" ..
-  (det and " +detektor" or "") .. (sto and " +baterie" or "") ..
-  (rdr and " +quarry" or ""))
+log("info", ("sender v%s bezi"):format(upd and upd.localVersion() or "?") ..
+  (det and " +det" or "") .. (sto and " +bat" or "") ..
+  (rdr and " +qry" or ""))
 
 local timer = os.startTimer(INTERVAL)
 local uiTimer = os.startTimer(2)
@@ -406,7 +408,7 @@ while running do
       -- kazdy pocitac odbavit vlastnim tempem
       local want = tonumber(msg.version) or 0
       if want > upd.localVersion() then
-        log("info", "prichozi vyzva na verzi " .. want)
+        log("info", "vyzva v" .. want .. ", stahuji")
 
         -- stejne rozlozeni jako pri bootu, at deset stroju
         -- nezavali PC1 naraz
@@ -417,7 +419,7 @@ while running do
         if err then
           log("error", "update selhal: " .. tostring(err))
         elseif changed then
-          log("ok", "verze " .. tostring(ver) .. ", restartuji")
+          log("ok", "v" .. tostring(ver) .. ", restart")
           sleep(1)
           os.reboot()
         end
@@ -452,6 +454,7 @@ while running do
     local a = trim(read(nil, nil, nil, alias or ""))
     alias = (a ~= "") and a:sub(1, ALIAS_MAX) or nil
     writeAlias(alias)
+    if upd then upd.logName = alias end
     log("info", "alias: " .. tostring(alias or "(zadny)"))
     status()
 
