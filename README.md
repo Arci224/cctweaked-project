@@ -89,6 +89,13 @@ nebo `remote`.
 Co to **neodchytí**: běhovou chybu, která se projeví až po čase, a
 logickou chybu. Kód projde překladem a spustí se.
 
+## Alias stanoviště
+
+Na vzdáleném počítači stiskni **A** a napiš jméno (max 16 znaků).
+Uloží se do `/.sleepmon_alias`, posílá se s každou zprávou a PC1 ho
+použije místo `QRY3` / `BAT3` u všeho, co ten počítač hlásí. Prázdný
+vstup alias zruší. Změna se na PC1 projeví hned, restart není potřeba.
+
 ## Log
 
 Vzdálené počítače hlásí na PC1 start, výpadky periferií a pády

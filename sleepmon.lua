@@ -877,8 +877,9 @@ local function rebuildQuarries()
   for id in pairs(quarry.remotes) do ids[#ids + 1] = id end
   table.sort(ids)
   for _, id in ipairs(ids) do
+    local r = quarry.remotes[id]
     list[#list + 1] = { kind = "remote", id = id, key = "Q:R" .. id,
-                        label = "QRY" .. id }
+                        label = (r and r.name) or ("QRY" .. id) }
   end
 
   quarry.list = list
@@ -977,6 +978,14 @@ local function quarryRate(key, windowMs)
   return (s[n].done - s[first].done) / dt, dt
 end
 
+-- odhad jako HH:MM pro velke cislice; nad 99 hodin uz se nevejde
+local function etaClock(sec)
+  if not sec then return nil end
+  local h = math.floor(sec / 3600)
+  if h > 99 then return nil end
+  return string.format("%02d:%02d", h, math.floor((sec % 3600) / 60))
+end
+
 local function quarryEta(key)
   local h = quarry.hist[key]
   local done, total = quarryProgress(h and h.cur)
@@ -992,7 +1001,8 @@ end
 local function onRednet(id, msg, proto)
   if proto ~= RN_PROTO or type(msg) ~= "table" then return false end
   local now = os.epoch("utc")
-  local name = msg.label or ("PC" .. id)
+  -- alias nastaveny primo na tom pocitaci ma prednost pred jeho nazvem
+  local name = msg.alias or msg.label or ("PC" .. id)
 
   if msg.rate ~= nil then
     local known = energy.remotes[id] ~= nil
@@ -1005,7 +1015,8 @@ local function onRednet(id, msg, proto)
   end
 
   if type(msg.storage) == "table" then
-    local known = battery.remotes[id] ~= nil
+    local prevBat = battery.remotes[id]
+    local known = prevBat ~= nil and prevBat.label == (msg.alias or ("BAT" .. id))
     local key = "B:R" .. id
     battery.rx = battery.rx + 1
     registerDevice(key, { kind = "battery", label = name .. " bat", id = id })
@@ -1013,18 +1024,21 @@ local function onRednet(id, msg, proto)
       stored = tonumber(msg.storage.stored),
       cap    = tonumber(msg.storage.cap),
       unit   = msg.storage.unit or "FE",
-      label  = "BAT" .. id,
+      label  = msg.alias or ("BAT" .. id),
       lastSeen = now,
     }
     if not known then rebuildBatteries() end
   end
 
   if type(msg.quarry) == "table" then
-    local known = quarry.remotes[id] ~= nil
+    local prev = quarry.remotes[id]
+    -- popisky v seznamu jsou snimek, takze pri prejmenovani ho
+    -- musime prestavet, jinak by tam stare jmeno zustalo do restartu
+    local rebuild = (prev == nil) or (prev.name ~= msg.alias)
     local key = "Q:R" .. id
-    registerDevice(key, { kind = "quarry", label = name .. " qry", id = id })
-    quarry.remotes[id] = { q = msg.quarry, lastSeen = now }
-    if not known then rebuildQuarries() end
+    registerDevice(key, { kind = "quarry", label = name, id = id })
+    quarry.remotes[id] = { q = msg.quarry, lastSeen = now, name = msg.alias }
+    if rebuild then rebuildQuarries() end
   end
 
   return true
@@ -1627,16 +1641,19 @@ local function pageQuarry()
 
       local h = quarry.hist[s.key]
       local done, total = quarryProgress(h and h.cur)
-      text(CX, y, s.label:sub(1, 5), colors.white, BG)
+      -- sloupce: nazev | procenta | pruh | odhad vpravo
+      local nameW = 11
+      text(CX, y, s.label:sub(1, nameW), colors.white, BG)
 
       if not done then
-        text(CX + 6, y, (h and h.cur) and "?" or "offline", BAD, BG)
+        text(CX + nameW + 1, y, (h and h.cur) and "?" or "offline", BAD, BG)
       else
         local p = done / total
         local pc = (p >= 1) and colors.green or colors.lightBlue
-        text(CX + 6, y, string.format("%5.1f%%", p * 100), pc, BG)
-        local barW = CW - 21
-        if barW >= 4 then drawBar(CX + 13, y, barW, p, pc) end
+        text(CX + nameW + 1, y, string.format("%5.1f%%", p * 100), pc, BG)
+        local barX = CX + nameW + 8
+        local barW = (CX + CW - 9) - barX
+        if barW >= 4 then drawBar(barX, y, barW, p, pc) end
         local eta = quarryEta(s.key)
         textRight(CX, CW, y, eta and fmtLong(eta) or "--", MUTED, BG)
       end
@@ -1682,57 +1699,60 @@ local function pageQuarry()
     return
   end
 
-  text(CX, y, sx .. "x" .. sz .. "  Y " .. q.maxY .. ".." .. bot, MUTED, BG)
-  textRight(CX, CW, y, layers .. " vrstev", MUTED, BG)
-  y = y + 1
-
-  text(CX, y, "Hlava: " .. tostring(q.hx) .. " " .. tostring(q.hy) ..
-    " " .. tostring(q.hz), MUTED, BG)
+  text(CX, y, sx .. "x" .. sz .. ", " .. layers .. " vrstev", MUTED, BG)
+  textRight(CX, CW, y, "Y " .. q.maxY .. ".." .. bot, MUTED, BG)
   y = y + 2
 
-  -- postup
+  -- postup jako kontext k odhadu
   local p = done / total
   local col = (p >= 1) and colors.green or colors.lightBlue
   text(CX, y, string.format("%.2f %%", p * 100), col, BG)
   textRight(CX, CW, y, fmtFE(done) .. " / " .. fmtFE(total) .. " bl", MUTED, BG)
   y = y + 1
   drawBar(CX, y, CW, p, col)
-  drawBar(CX, y + 1, CW, p, col)
-  y = y + 3
+  y = y + 2
 
-  -- tempo tezby
-  local function rateLine(label, v, dt)
-    if not v then
-      text(CX, y, label .. " meri se...", MUTED, BG)
+  --=== odhad dotezeni cele quarry: hlavni cislo teto stranky ===--
+  local eta = quarryEta(src.key)
+  local avg, avgDt = quarryRate(src.key, quarry.longWin)
+
+  if p >= 1 then
+    fill(CX, y + 1, CW, 1, BG)
+    textCenter(CX, CW, y + 1, " DOTEZENO ", colors.black, colors.green)
+    y = y + 3
+  else
+    local big = eta and etaClock(eta)
+    if big and (H - y) >= 7 then
+      drawBig(CX + math.floor((CW - bigWidth(big)) / 2), y, big, colors.white, BG)
+      y = y + 5
+      textCenter(CX, CW, y, "hodin : minut do dotezeni", MUTED, BG)
+      y = y + 1
+    elseif eta then
+      -- pres 99 hodin uz se do velkych cislic nevejde
+      textCenter(CX, CW, y + 1, "Dotezeno za " .. fmtLong(eta), colors.white, BG)
+      y = y + 3
     else
-      text(CX, y, label, MUTED, BG)
-      text(CX + 9, y, string.format("%+.1f bl/s", v),
-        v > 0 and colors.green or colors.gray, BG)
-      if dt then textRight(CX, CW, y, "za " .. fmtLong(dt), colors.gray, BG) end
+      textCenter(CX, CW, y + 1, "Odhad se jeste pocita", MUTED, BG)
+      y = y + 3
     end
+  end
+
+  -- na cem odhad stoji; bez toho nejde poznat, jak moc mu verit
+  if y <= H - 1 then
+    if avg then
+      text(CX, y, string.format("podle %.0f bl/s za %s", avg, fmtLong(avgDt)),
+        colors.gray, BG)
+    end
+    textRight(CX, CW, y, "hlava Y " .. tostring(q.hy), colors.gray, BG)
     y = y + 1
   end
 
-  local avg, avgDt = quarryRate(src.key, quarry.longWin)
-  rateLine("Tempo:", quarryRate(src.key, quarry.shortWin), nil)
-  rateLine("Prumer:", avg, avgDt)
-
-  local eta = quarryEta(src.key)
-  if p >= 1 then
-    text(CX, y, "Hotovo", colors.green, BG)
-  elseif eta then
-    text(CX, y, "Hotovo za " .. fmtLong(eta), colors.white, BG)
-  else
-    text(CX, y, "Odhad se pocita...", MUTED, BG)
-  end
-  y = y + 2
-
   -- vlastni energeticky buffer stroje
-  if q.energy and q.maxEnergy and q.maxEnergy > 0 and y <= H then
+  if q.energy and q.maxEnergy and q.maxEnergy > 0 and y <= H - 1 then
     local bp = q.energy / q.maxEnergy
     text(CX, y, "Buffer:", MUTED, BG)
     text(CX + 9, y, string.format("%.1f %%", bp * 100), pctColor(bp), BG)
-    y = y + 2
+    y = y + 1
   end
 
   -- dno je odhad, dokud ho quarry nema nastaveny sama

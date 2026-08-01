@@ -198,6 +198,40 @@ local function log(level, text)
   if upd then pcall(upd.log, level, text) end
 end
 
+--=====================================================================
+-- ALIAS STANOVISTE
+--=====================================================================
+-- Jmeno se nastavuje primo tady klavesou A a putuje s kazdou zpravou.
+-- PC1 ho pouzije misto strohého QRY3 / BAT3 u vseho, co tenhle
+-- pocitac hlasi.
+
+local ALIAS_FILE = "/.sleepmon_alias"
+local ALIAS_MAX  = 16
+
+local function trim(s)
+  return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function readAlias()
+  if not fs.exists(ALIAS_FILE) then return nil end
+  local f = fs.open(ALIAS_FILE, "r")
+  if not f then return nil end
+  local a = trim(f.readAll())
+  f.close()
+  return a ~= "" and a:sub(1, ALIAS_MAX) or nil
+end
+
+local function writeAlias(a)
+  if not a or a == "" then
+    if fs.exists(ALIAS_FILE) then fs.delete(ALIAS_FILE) end
+    return
+  end
+  local f = fs.open(ALIAS_FILE, "w")
+  if f then f.write(a); f.close() end
+end
+
+local alias = readAlias()
+
 -- hlasime jen zmeny stavu, ne kazdy tik - jinak by log zaplavilo
 local function watch(name, present, was)
   if present == was then return present end
@@ -239,6 +273,11 @@ local function status()
   print("SleepMon vysilac energie")
   print("")
   term.setTextColor(colors.lightGray)
+  if alias then
+    term.setTextColor(colors.white)
+    print("Alias:    " .. alias)
+    term.setTextColor(colors.lightGray)
+  end
   print("Nazev:    " .. label .. "  (ID " .. os.getComputerID() .. ")")
   print("Modem:    " .. (wireless and "bezdratovy OK" or "jen wired (!)"))
 
@@ -271,7 +310,7 @@ local function status()
   term.setTextColor(colors.gray)
   print("Odeslano: " .. sent .. " zprav")
   print("")
-  print("Q ukonci program.")
+  print("A = alias stanoviste,  Q = konec")
 end
 
 status()
@@ -297,7 +336,7 @@ while running do
       if not rdr then rdr, rdrName = findReader() end
     end
 
-    local payload = { label = label }
+    local payload = { label = label, alias = alias }
     local any = false
 
     if det then
@@ -363,6 +402,29 @@ while running do
     sto, stoName = findStorage()
     rdr, rdrName = findReader()
     status()
+
+  elseif ev[1] == "key" and ev[2] == keys.a then
+    term.setBackgroundColor(colors.black)
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.setTextColor(colors.white)
+    print("Alias tohoto stanoviste")
+    term.setTextColor(colors.lightGray)
+    print("Zobrazi se na PC1 misto QRY/BAT + ID.")
+    print("Prazdny vstup alias zrusi. Max " .. ALIAS_MAX .. " znaku.")
+    print("")
+    term.setTextColor(colors.white)
+    write("> ")
+
+    local a = trim(read(nil, nil, nil, alias or ""))
+    alias = (a ~= "") and a:sub(1, ALIAS_MAX) or nil
+    writeAlias(alias)
+    log("info", "alias: " .. tostring(alias or "(zadny)"))
+    status()
+
+    -- read() spolykal i nase timery, musime je nasadit znovu
+    timer = os.startTimer(INTERVAL)
+    uiTimer = os.startTimer(2)
 
   elseif ev[1] == "key" and ev[2] == keys.q then
     running = false
