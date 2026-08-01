@@ -18,8 +18,8 @@
 local args = { ... }
 
 -- ZMEN NA SVUJ REPOZITAR (nebo predej argumenty)
-local USER   = args[1] or "uzivatel"
-local REPO   = args[2] or "sleepmon"
+local USER   = args[1] or "Arci224"
+local REPO   = args[2] or "cctweaked-project"
 local BRANCH = args[3] or "main"
 
 local function rawUrl(file)

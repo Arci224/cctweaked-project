@@ -792,11 +792,15 @@ local quarry = {
   list     = {},
   remotes  = {},
   index    = 1,
-  samples  = {},      -- {t=epoch ms, done=vytezeno bloku}
+  -- Historie je per zdroj, ne jedna spolecna. Pri deseti quarry by
+  -- jinak prepnuti vzdy zahodilo nasbirane vzorky a odhad by se
+  -- pokazde pocital znovu od nuly.
+  hist     = {},      -- [key] = { samples = {...}, cur = <data> }
   shortWin = 30000,
   longWin  = 300000,
-  cur      = nil,     -- posledni rozparsovana data
   tick     = 0,
+  rr       = 0,       -- kolecko pro lokalni ctece (NBT je drahe)
+  showList = true,    -- prehled vs. detail jedne quarry
 }
 
 -- Vytahne z NBT jen to podstatne. Stejna funkce je i ve vysilaci,
@@ -897,32 +901,67 @@ local function readQuarry(src)
   return parseQuarry(data, okS and st or nil)
 end
 
-local function sampleQuarry()
-  -- cteni celeho NBT je drahe, staci po dvou sekundach
-  quarry.tick = quarry.tick + cfg.refresh
-  if quarry.tick < 2 then return end
-  quarry.tick = 0
+local function histOf(key)
+  local h = quarry.hist[key]
+  if not h then h = { samples = {} }; quarry.hist[key] = h end
+  return h
+end
 
-  local src = qsrc()
+local function updateOne(src, now)
+  local h = histOf(src.key)
   local q = readQuarry(src)
-  quarry.cur = q
+  h.cur = q
   if not q then return end
   markSeen(src.key)
 
   local done = quarryProgress(q)
   if not done then return end
 
-  local now = os.epoch("utc")
-  quarry.samples[#quarry.samples + 1] = { t = now, done = done }
-  while #quarry.samples > 1 and now - quarry.samples[1].t > quarry.longWin do
-    table.remove(quarry.samples, 1)
+  h.samples[#h.samples + 1] = { t = now, done = done }
+  while #h.samples > 1 and now - h.samples[1].t > quarry.longWin do
+    table.remove(h.samples, 1)
   end
 end
 
--- vytezenych bloku za sekundu
-local function quarryRate(windowMs)
-  local s = quarry.samples
-  local n = #s
+local function sampleQuarry()
+  quarry.tick = quarry.tick + cfg.refresh
+  if quarry.tick < 2 then return end
+  quarry.tick = 0
+
+  local now = os.epoch("utc")
+
+  -- Vzdalene zdroje jsou zdarma, data uz dosla po rednetu. Lokalni
+  -- ctecky sahaji na cele NBT, takze jedeme jednu za druhou dokola -
+  -- deset naraz kazde dve sekundy by pocitac zbytecne zatezovalo.
+  local locals = {}
+  for _, src in ipairs(quarry.list) do
+    if src.kind == "remote" then
+      updateOne(src, now)
+    else
+      locals[#locals + 1] = src
+    end
+  end
+
+  if #locals > 0 then
+    quarry.rr = (quarry.rr % #locals) + 1
+    updateOne(locals[quarry.rr], now)
+  end
+
+  -- uklid po zdrojich, ktere zmizely
+  for key in pairs(quarry.hist) do
+    local live = false
+    for _, src in ipairs(quarry.list) do
+      if src.key == key then live = true break end
+    end
+    if not live then quarry.hist[key] = nil end
+  end
+end
+
+-- vytezenych bloku za sekundu pro konkretni zdroj
+local function quarryRate(key, windowMs)
+  local h = quarry.hist[key]
+  local s = h and h.samples
+  local n = s and #s or 0
   if n < 2 then return nil end
 
   local cutoff = s[n].t - (windowMs or quarry.shortWin)
@@ -938,10 +977,11 @@ local function quarryRate(windowMs)
   return (s[n].done - s[first].done) / dt, dt
 end
 
-local function quarryEta()
-  local done, total = quarryProgress(quarry.cur)
+local function quarryEta(key)
+  local h = quarry.hist[key]
+  local done, total = quarryProgress(h and h.cur)
   if not done then return nil end
-  local r = quarryRate(quarry.longWin) or quarryRate(quarry.shortWin)
+  local r = quarryRate(key, quarry.longWin) or quarryRate(key, quarry.shortWin)
   if not r or r <= 0 then return nil end
   return (total - done) / r
 end
@@ -1571,25 +1611,58 @@ local function pageQuarry()
     return
   end
 
-  if #quarry.list > 1 then
-    local bx = CX
-    for i, s in ipairs(quarry.list) do
-      local sel = (i == quarry.index)
-      local w = math.min(8, math.floor(CW / #quarry.list) - 1)
-      if bx + w - 1 <= CX + CW - 1 then
-        button(bx, y, w, 1, s.label, sel and colors.lightBlue or PANEL,
-          sel and colors.black or colors.white, function()
-            quarry.index = i
-            quarry.samples = {}
-            quarry.cur = nil
-          end)
-      end
-      bx = bx + w + 1
-    end
+  -- Pri vice strojich je prehled uzitecnejsi nez prepinac. Deset
+  -- tlacitek vedle sebe by melo dva znaky na popisek.
+  if #quarry.list > 1 and quarry.showList then
+    text(CX, y, "Quarry", colors.white, BG)
+    textRight(CX, CW, y, #quarry.list .. " stroju", MUTED, BG)
     y = y + 2
+
+    local maxRows = H - y + 1
+    for i, s in ipairs(quarry.list) do
+      if i > maxRows then
+        text(CX, H, "+" .. (#quarry.list - maxRows + 1) .. " dalsich", colors.gray, BG)
+        break
+      end
+
+      local h = quarry.hist[s.key]
+      local done, total = quarryProgress(h and h.cur)
+      text(CX, y, s.label:sub(1, 5), colors.white, BG)
+
+      if not done then
+        text(CX + 6, y, (h and h.cur) and "?" or "offline", BAD, BG)
+      else
+        local p = done / total
+        local pc = (p >= 1) and colors.green or colors.lightBlue
+        text(CX + 6, y, string.format("%5.1f%%", p * 100), pc, BG)
+        local barW = CW - 21
+        if barW >= 4 then drawBar(CX + 13, y, barW, p, pc) end
+        local eta = quarryEta(s.key)
+        textRight(CX, CW, y, eta and fmtLong(eta) or "--", MUTED, BG)
+      end
+
+      -- cely radek je klikaci, otevre detail
+      local idx = i
+      clickables[#clickables + 1] = {
+        x = CX, y = y, w = CW, h = 1,
+        action = function() quarry.index = idx; quarry.showList = false end,
+      }
+      y = y + 1
+    end
+    return
   end
 
-  local q = quarry.cur
+  local hist = quarry.hist[src.key]
+  local q = hist and hist.cur
+
+  -- navrat do prehledu kreslime driv nez obsah, at je dostupny
+  -- i kdyz je stroj offline a zbytek stranky se nevykresli
+  if #quarry.list > 1 then
+    button(CX, H, 12, 1, "< Seznam", PANEL, colors.white, function()
+      quarry.showList = true
+    end)
+  end
+
   if not q then
     text(CX, y, src.kind == "remote" and "Spojeni vypadlo" or "Blok neodpovida", BAD, BG)
     y = y + 1
@@ -1597,7 +1670,7 @@ local function pageQuarry()
     return
   end
 
-  text(CX, y, "Quarry", colors.white, BG)
+  text(CX, y, src.label, colors.white, BG)
   local stCol = colors.lightGray
   if q.working == false then stCol = colors.orange end
   textRight(CX, CW, y, q.state, stCol, BG)
@@ -1640,11 +1713,11 @@ local function pageQuarry()
     y = y + 1
   end
 
-  local avg, avgDt = quarryRate(quarry.longWin)
-  rateLine("Tempo:", quarryRate(quarry.shortWin), nil)
+  local avg, avgDt = quarryRate(src.key, quarry.longWin)
+  rateLine("Tempo:", quarryRate(src.key, quarry.shortWin), nil)
   rateLine("Prumer:", avg, avgDt)
 
-  local eta = quarryEta()
+  local eta = quarryEta(src.key)
   if p >= 1 then
     text(CX, y, "Hotovo", colors.green, BG)
   elseif eta then
@@ -1663,15 +1736,15 @@ local function pageQuarry()
   end
 
   -- dno je odhad, dokud ho quarry nema nastaveny sama
-  if y <= H and not q.digMinY then
+  if y <= H - 1 and not q.digMinY then
     text(CX, y, "Dno (odhad): " .. cfg.quarryBottomY, MUTED, BG)
     button(CX + 20, y, 5, 1, "-16", PANEL, colors.white, function()
       cfg.quarryBottomY = math.max(-64, cfg.quarryBottomY - 16)
-      saveConfig(); quarry.samples = {}
+      saveConfig(); quarry.hist = {}
     end)
     button(CX + 26, y, 5, 1, "+16", PANEL, colors.white, function()
       cfg.quarryBottomY = math.min((q.maxY or 320) - 1, cfg.quarryBottomY + 16)
-      saveConfig(); quarry.samples = {}
+      saveConfig(); quarry.hist = {}
     end)
   end
 end

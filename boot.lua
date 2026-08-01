@@ -89,7 +89,16 @@ else
       err = "HTTP je vypnute v configu CC:Tweaked"
     end
   else
-    ver, err, changed = upd.pullRednet(5)
+    -- Po nacteni sveta startuji vsechny pocitace naraz. Kdyby si o
+    -- soubory rekly zaroven, PC1 by je odbavovalo jeden po druhem
+    -- v event smycce a UI by na dlouho zamrzlo. Rozprostreme to
+    -- podle ID - deterministicky, takze se dva nesejdou.
+    local wait = os.getComputerID() % 12
+    if wait > 0 then
+      say(colors.gray, "Cekam " .. wait .. " s (rozlozeni zateze PC1)")
+      sleep(wait)
+    end
+    ver, err, changed = upd.pullRednet(10)
   end
 
   if err then
