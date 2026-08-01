@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "files": [
+    "boot.lua",
+    "updater.lua",
+    "sleepmon.lua",
+    "sender.lua",
+    "scan.lua",
+    "nbt.lua"
+  ]
+}
