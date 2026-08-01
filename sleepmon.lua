@@ -284,7 +284,17 @@ end
 -- LOG ZE VZDALENYCH POCITACU
 --=====================================================================
 
-local logs = { lines = {}, max = 300, unseen = 0, errors = 0 }
+local logs = { lines = {}, max = 300, unseen = 0, errors = 0, scroll = 0 }
+
+-- Jmeno protejsku podle ID pocitace. Bereme alias z registru drive
+-- videnych zarizeni, jinak zbyde holé PC<id>.
+local function peerName(id)
+  if not id then return nil end
+  for _, e in pairs(cfg.expected) do
+    if e.id == id and e.label then return e.label end
+  end
+  return "PC" .. id
+end
 
 -- Realny cas, ne herni. Herni hodiny pri spanku preskoci o pul dne
 -- a razitka v logu by prestala davat smysl.
@@ -296,16 +306,31 @@ local function realClock()
     math.floor(s / 3600) % 24, math.floor(s / 60) % 60, s % 60)
 end
 
+-- dir: "out" = PC1 -> protejsek, "in" = protejsek -> PC1, jinak PC1 sam
 local function addLog(entry)
   if type(entry) ~= "table" then return end
   local level = tostring(entry.level or "info")
+
+  local peer = entry.peer
+  if type(peer) == "number" then peer = peerName(peer) end
+  if not peer and entry.dir == "in" then peer = entry.from end
+
   logs.lines[#logs.lines + 1] = {
     clock = realClock(),
     level = level,
     text  = tostring(entry.text or ""),
-    from  = tostring(entry.from or "?"),
+    dir   = entry.dir or "local",
+    peer  = peer and tostring(peer) or nil,
   }
+
   while #logs.lines > logs.max do table.remove(logs.lines, 1) end
+
+  -- kdyz uzivatel roluje historii, novy zaznam mu nesmi posunout
+  -- vypis pod rukama
+  if logs.scroll > 0 then
+    logs.scroll = math.min(logs.scroll + 1, #logs.lines)
+  end
+
   if state.page ~= "log" then
     logs.unseen = logs.unseen + 1
     if level == "error" then logs.errors = logs.errors + 1 end
@@ -439,8 +464,10 @@ end
 
 local function sendChallenge(targets, version)
   if not updater then return end
-  for id in pairs(targets) do
+  for id, nm in pairs(targets) do
     pcall(rednet.send, id, { cmd = "update", version = version }, updater.PROTO)
+    addLog({ level = "info", dir = "out", peer = nm,
+             text = "vyzva v" .. version })
   end
   -- broadcast navic kvuli pocitacum, ktere jsme jeste nikdy nevideli
   pcall(rednet.broadcast, { cmd = "update", version = version }, updater.PROTO)
@@ -465,10 +492,9 @@ local function startRollout()
   rollout.active   = n > 0
 
   if n == 0 then
-    addLog({ level = "ok", from = "PC1", text = "vsichni uz maji v" .. target })
+    addLog({ level = "ok", text = "vsichni uz maji v" .. target })
   else
-    addLog({ level = "info", from = "PC1",
-             text = "vyzva v" .. target .. " -> " .. nameList(pending) })
+    addLog({ level = "info", text = "rozesilam v" .. target .. " (" .. n .. " PC)" })
   end
   sendChallenge(pending, target)
 end
@@ -1986,68 +2012,138 @@ local function pageLog()
   logs.unseen = 0
   logs.errors = 0
 
-  local rows = math.max(1, (H - 2) - y + 1)
-  local first = math.max(1, #logs.lines - rows + 1)
+  local n = #logs.lines
+  local rows = math.max(1, (H - 1) - y + 1)     -- posledni radek patri rolovani
+  local maxScroll = math.max(0, n - rows)
+  if logs.scroll > maxScroll then logs.scroll = maxScroll end
 
-  if #logs.lines == 0 then
+  local last = n - logs.scroll
+  local first = math.max(1, last - rows + 1)
+
+  if n == 0 then
     text(CX, y, "zatim nic", colors.gray, BG)
   end
 
-  -- Zdroj pisemene jen kdyz se zmeni. Behem aktualizace jde deset
-  -- radku po sobe od stejneho pocitace a jmeno by jen ubiralo misto
-  -- na text, ktery se do sirky monitoru sotva vejde.
-  local lastFrom = nil
-  for i = first, #logs.lines do
+  -- Protejsek pisemene jen kdyz se zmeni smer nebo jmeno. Pri vymene
+  -- zprav se stridaji, takze se ukazuji; u serie zaznamu od jednoho
+  -- pocitace zbude vic mista na text.
+  local lastKey = nil
+  for i = first, last do
     local l = logs.lines[i]
+
     local col = colors.lightGray
     if l.level == "error" then col = colors.red
     elseif l.level == "warn" then col = colors.orange
     elseif l.level == "ok" then col = colors.green
     elseif l.level == "debug" then col = colors.gray end
 
-    local prefix = (l.from ~= lastFrom) and (l.from .. " ") or ""
-    lastFrom = l.from
-    text(CX, y, (l.clock .. " " .. prefix .. l.text):sub(1, CW), col, BG)
+    local sym = "."
+    if l.dir == "out" then sym = ">"
+    elseif l.dir == "in" then sym = "<" end
+
+    local who = l.peer or "PC1"
+    local key = sym .. who
+    local head = l.clock .. " " .. sym .. " "
+    if key ~= lastKey then head = head .. who:sub(1, 8) .. " " end
+    lastKey = key
+
+    text(CX, y, (head .. l.text):sub(1, CW), col, BG)
     y = y + 1
   end
 
-  -- Rozeslani je zamerne oddelene od restartu PC1. Vzdalene pocitace
-  -- si soubory tahaji prave z PC1, takze musi zustat nabehnute,
-  -- dokud se neaktualizuji - restart az nakonec, rucne.
-  local bw = math.floor((CW - 2) / 3)
-  button(CX, H, bw, 1, "Stahnout", colors.blue, colors.white, function()
-    if not updater then toast("updater chybi"); return end
-    if not updater.httpAvailable() then toast("HTTP je vypnute"); return end
+  -- rolovani historie; ovladani aktualizaci patri do Zarizeni
+  local sy = H
+  fill(CX, sy, CW, 1, BG)
+  button(CX, sy, 4, 1, "^", PANEL, colors.white, function()
+    logs.scroll = math.min(maxScroll, logs.scroll + rows - 1)
+  end)
+  button(CX + 5, sy, 4, 1, "v", PANEL, colors.white, function()
+    logs.scroll = math.max(0, logs.scroll - (rows - 1))
+  end)
+  button(CX + 10, sy, 7, 1, "konec", PANEL, colors.white, function()
+    logs.scroll = 0
+  end)
+  textRight(CX, CW, sy,
+    (n == 0) and "prazdno" or (first .. "-" .. last .. "/" .. n),
+    (logs.scroll > 0) and colors.yellow or colors.gray, BG)
 
-    toast("stahuji...")
-    draw()
-    local ver, err, changed = updater.pullGithub(true)
-    if err then
-      addLog({ level = "error", from = "PC1", text = "update: " .. tostring(err) })
-      toast("chyba, viz log")
-    elseif changed then
-      addLog({ level = "ok", from = "PC1", text = "stazeno v" .. tostring(ver) })
-      startRollout()
-      toast("verze " .. tostring(ver) .. ", rozeslano")
-    else
-      toast("uz je aktualni")
+end
+
+-- detail jednoho zdroje; otevira se tlacitkem D v seznamu
+local function pageDeviceDetail(key)
+  local e = cfg.expected[key]
+  local st, col, age = deviceStatus(key)
+  local y = CY
+
+  text(CX, y, tostring(e.label):sub(1, 24), colors.white, BG)
+  textRight(CX, CW, y, st, col, BG)
+  y = y + 2
+
+  local function line(k, v, vc)
+    if y > H - 1 then return end
+    text(CX, y, k, MUTED, BG)
+    text(CX + 11, y, tostring(v):sub(1, CW - 11), vc or colors.white, BG)
+    y = y + 1
+  end
+
+  local kindName = "tok energie"
+  if e.kind == "quarry" then kindName = "quarry"
+  elseif e.kind == "battery" then kindName = "baterie" end
+  line("Druh:", kindName)
+
+  if e.id then
+    line("Spojeni:", "rednet, PC" .. e.id)
+
+    local theirs = updater and devices.version[e.id]
+    local mine = updater and updater.localVersion()
+    line("Verze:", "v" .. (theirs or "?"),
+      (theirs and theirs == mine) and colors.green or colors.red)
+    if theirs and mine and theirs ~= mine then
+      line("", "PC1 ma v" .. mine, colors.red)
     end
-  end)
 
-  button(CX + bw + 1, H, bw, 1, "Rozeslat", colors.blue, colors.white, function()
-    if not updater then toast("updater chybi"); return end
-    startRollout()
-    toast("vyzva odeslana")
-  end)
+    local up = devices.uptime[e.id]
+    line("Uptime:", up and fmtLong(up) or "?")
+  else
+    line("Spojeni:", "kabel")
+    line("Blok:", e.name or "?")
+  end
 
-  button(CX + 2 * bw + 2, H, bw, 1, "Restart", colors.gray, colors.white, function()
-    draw()
-    sleep(0.5)
-    os.reboot()
+  line("Posledni:", age and ("pred " .. fmtLong(age)) or "nikdy se neozval",
+    (st == "OK") and colors.white or BAD)
+
+  y = y + 1
+  line("Klic:", key, colors.gray)
+
+  -- tlacitka
+  button(CX, H, 7, 1, "< Zpet", PANEL, colors.white, function()
+    state.devSel = nil
   end)
+  if e.id and updater then
+    button(CX + 8, H, 13, 1, "Aktualizovat", colors.blue, colors.white, function()
+      pcall(rednet.send, e.id,
+        { cmd = "update", version = updater.localVersion() }, updater.PROTO)
+      addLog({ level = "info", dir = "out", peer = e.label,
+               text = "vyzva v" .. updater.localVersion() })
+      toast("vyzva odeslana")
+    end)
+    button(CX + 22, H, 9, 1, "Restart", colors.brown, colors.white, function()
+      pcall(rednet.send, e.id, { cmd = "reboot" }, updater.PROTO)
+      addLog({ level = "warn", dir = "out", peer = e.label, text = "restart" })
+      toast("restart odeslan")
+    end)
+  end
 end
 
 local function pageDevices()
+  -- vybrany zdroj prekryva seznam
+  if state.devSel then
+    if cfg.expected[state.devSel] then
+      return pageDeviceDetail(state.devSel)
+    end
+    state.devSel = nil   -- zdroj mezitim zmizel z registru
+  end
+
   local y = CY
 
   text(CX, y, "Zarizeni", colors.white, BG)
@@ -2057,23 +2153,69 @@ local function pageDevices()
   local probs = problemCount()
   textRight(CX, CW, y, probs == 0 and "vse OK" or (probs .. "x problem"),
     probs == 0 and OK or BAD, BG)
+  y = y + 1
+
+  -- ovladani hlavniho pocitace
+  text(CX, y, "PC1", MUTED, BG)
+  button(CX + 12, y, 10, 1, "Stahnout", colors.blue, colors.white, function()
+    if not updater then toast("updater chybi"); return end
+    if not updater.httpAvailable() then toast("HTTP je vypnute"); return end
+
+    toast("stahuji...")
+    draw()
+    local ver, err, changed = updater.pullGithub(true)
+    if err then
+      addLog({ level = "error", text = "update: " .. tostring(err) })
+      toast("chyba, viz Log")
+    elseif changed then
+      addLog({ level = "ok", text = "stazeno v" .. tostring(ver) })
+      -- hromadne rozeslani vcetne opakovani a hlaseni, kdo se neozval;
+      -- jednotlive ">" u zdroju slouzi na doslani konkretnimu PC
+      startRollout()
+      toast("stazeno v" .. tostring(ver) .. ", rozeslano")
+    else
+      toast("uz je aktualni")
+    end
+  end)
+  button(CX + 23, y, 9, 1, "Restart", colors.gray, colors.white, function()
+    draw()
+    sleep(0.5)
+    os.reboot()
+  end)
   y = y + 2
 
-  -- Jeden radek tabulky: nazev | detail | verze | stav vpravo.
-  -- Verze ma vlastni barvu, aby zaostaly pocitac byl videt na prvni
-  -- pohled i kdyz jinak funguje.
-  local function row(name, detail, stat, col, ver, verCol)
-    if y > H - 2 then return false end
-    text(CX, y, name:sub(1, 9), MUTED, BG)
+  -- Radek zdroje: nazev | druh | verze | stav | tlacitka.
+  -- Sirka monitoru na vic nestaci, proto je druh jen tripismenna
+  -- znacka a stari vypadku se cte z logu.
+  local function row(name, kind, stat, col, ver, verCol, id, label, key)
+    if y > H - 1 then return false end
+    text(CX, y, name:sub(1, 10), colors.white, BG)
+    if kind then text(CX + 11, y, kind, MUTED, BG) end
+    if ver then text(CX + 15, y, ver, verCol or colors.gray, BG) end
+    text(CX + 20, y, stat, col, BG)
 
-    local space = math.max(1, CW - 19)
-    detail = detail:sub(1, space)
-    text(CX + 10, y, detail, colors.white, BG)
-    if ver then
-      text(CX + 10 + #detail + 1, y, ver, verCol or colors.gray, BG)
+    if key then
+      button(CX + 28, y, 2, 1, "D", PANEL, colors.white, function()
+        state.devSel = key
+      end)
     end
 
-    textRight(CX, CW, y, stat, col, BG)
+    -- odeslani a restart davaji smysl jen u vzdalenych pocitacu
+    if id and updater then
+      button(CX + 31, y, 2, 1, ">", PANEL, colors.white, function()
+        pcall(rednet.send, id,
+          { cmd = "update", version = updater.localVersion() }, updater.PROTO)
+        addLog({ level = "info", dir = "out", peer = label,
+                 text = "vyzva v" .. updater.localVersion() })
+        toast("vyzva -> " .. tostring(label))
+      end)
+      button(CX + 34, y, 2, 1, "R", colors.brown, colors.white, function()
+        pcall(rednet.send, id, { cmd = "reboot" }, updater.PROTO)
+        addLog({ level = "warn", dir = "out", peer = label, text = "restart" })
+        toast("restart -> " .. tostring(label))
+      end)
+    end
+
     y = y + 1
     return true
   end
@@ -2082,7 +2224,7 @@ local function pageDevices()
   -- v poradku, jen zabiraji radky - "vse OK" v zahlavi staci.
   local shownCore = false
   if not speaker then
-    row("Speaker", "nenalezen", "CHYBI", BAD)
+    row("Speaker", nil, "CHYBI", BAD)
     shownCore = true
   end
 
@@ -2091,13 +2233,13 @@ local function pageDevices()
     if peripheral.getType(name) == "modem" then nModem = nModem + 1 end
   end
   if nModem == 0 then
-    row("Modem", "zadny - rednet nejede", "CHYBI", colors.orange)
+    row("Modem", nil, "CHYBI", colors.orange)
     shownCore = true
   end
 
   -- evidovana stanoviste (i ta, ktera prave nehlasi)
   if shownCore then y = y + 1 end
-  if y <= H - 2 then
+  if y <= H - 1 then
     text(CX, y, "Zdroje dat:", MUTED, BG); y = y + 1
   end
 
@@ -2106,24 +2248,16 @@ local function pageDevices()
   table.sort(keys)
 
   if #keys == 0 then
-    if y <= H - 2 then text(CX, y, "zatim zadny nebyl viden", colors.gray, BG) end
+    if y <= H then text(CX, y, "zatim zadny nebyl viden", colors.gray, BG) end
   else
     local shown = 0
     for _, k in ipairs(keys) do
       local e = cfg.expected[k]
-      local st, col, age = deviceStatus(k)
-      local detail
-      if e.kind == "quarry" then
-        detail = e.name and "quarry kabel" or ("quarry PC" .. tostring(e.id))
-      elseif e.kind == "battery" then
-        detail = e.name and ("baterie kabel") or ("baterie PC" .. tostring(e.id))
-      elseif e.kind == "local" then
-        detail = "kabel"
-      else
-        detail = "rednet PC" .. tostring(e.id)
-      end
+      local st, col = deviceStatus(k)
 
-      if st ~= "OK" and age then detail = detail .. " " .. fmtDuration(age) end
+      local kind = "TOK"
+      if e.kind == "quarry" then kind = "QRY"
+      elseif e.kind == "battery" then kind = "BAT" end
 
       -- Verze kreslime zvlast, aby sla obarvit. Cervene = jina nez
       -- ma PC1, "v?" = pocitac verzi vubec nehlasi, tedy bezi na
@@ -2135,7 +2269,7 @@ local function pageDevices()
         verCol = (theirs == updater.localVersion()) and colors.gray or colors.red
       end
 
-      if row(tostring(e.label), detail, st, col, ver, verCol) then
+      if row(tostring(e.label), kind, st, col, ver, verCol, e.id, e.label, k) then
         shown = shown + 1
       else
         break
@@ -2349,7 +2483,12 @@ local function main()
         -- vzdaleny pocitac si rika o aktualizaci
         pcall(updater.serve, rid, rmsg, rproto)
       elseif updater and rproto == updater.LOG_PROTO then
-        addLog(rmsg)
+        -- vse, co dorazi od jineho pocitace, je prichozi smer
+        if type(rmsg) == "table" then
+          rmsg.dir  = "in"
+          rmsg.peer = rmsg.from
+          addLog(rmsg)
+        end
       else
         onRednet(rid, rmsg, rproto)
       end

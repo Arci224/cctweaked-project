@@ -405,6 +405,13 @@ while running do
       if v and det then call(det, "setTransferRateLimit", math.floor(v)) end
 
     elseif upd and proto == upd.PROTO and type(msg) == "table"
+           and msg.cmd == "reboot" then
+      -- posila se vzdy adresne, nikdy broadcastem
+      log("warn", "restart na zadost PC1")
+      sleep(1)
+      os.reboot()
+
+    elseif upd and proto == upd.PROTO and type(msg) == "table"
            and msg.cmd == "update" then
       -- PC1 hlasi novou verzi; stahujeme si ji sami, at si to muze
       -- kazdy pocitac odbavit vlastnim tempem

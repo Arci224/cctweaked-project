@@ -72,11 +72,24 @@ nebo `remote`.
 1. Uprav soubory
 2. **Zvyš `version` v `manifest.json`** — bez toho se nic nestáhne
 3. `git push`
-4. Na PC1 v záložce Log stiskni **Stahnout** — stáhne z GitHubu a rovnou
-   rozešle výzvu ostatním
-5. Počkej, až v záložce **Zarizeni** budou u všech počítačů stejná
-   čísla verzí (`rednet PC7 v5`)
+4. Na PC1 v záložce **Zarizeni** stiskni **Stahnout** — stáhne z GitHubu
+   a rovnou rozešle výzvu ostatním
+5. Počkej, až budou u všech počítačů stejná čísla verzí
 6. Teprve pak **Restart** na PC1
+
+Ovládání je v záložce Zarizeni:
+
+| Prvek | Co dělá |
+|---|---|
+| `Stahnout` | PC1 stáhne z GitHubu a rozešle výzvu ostatním |
+| `Restart` | restartuje PC1 |
+| `D` u zdroje | detail toho stroje |
+| `>` u zdroje | pošle výzvu k aktualizaci jen tomu počítači |
+| `R` u zdroje | restartuje jen ten počítač |
+
+`>` a `R` se posílají **adresně**, nikdy broadcastem — `R` by jinak
+restartoval všechno naráz. Obě tlačítka jsou bez potvrzení, tak pozor
+na překlepnutí prstem; restart je ale zotavitelný, počítač naběhne sám.
 
 Pořadí není libovolné: vzdálené počítače si soubory tahají **z PC1**,
 takže musí zůstat naběhnuté, dokud se neaktualizují. Proto se PC1
@@ -84,6 +97,25 @@ nerestartuje sám.
 
 Tlačítko **Rozeslat** pošle výzvu znovu bez stahování — na počítač,
 který byl zrovna offline nebo v nenačteném chunku.
+
+### Čtení logu
+
+Každý řádek má směr komunikace:
+
+| Značka | Význam |
+|---|---|
+| `.` | PC1 sám (stahování z GitHubu, zápis souborů) |
+| `>` | PC1 → protějšek (odchozí) |
+| `<` | protějšek → PC1 (příchozí) |
+
+Jméno protějšku se píše jen když se změní — při výměně zpráv se střídají,
+takže je vidět celý dialog; u série řádků od jednoho počítače zbude víc
+místa na text.
+
+Rolování je na řádku nad tlačítky: `^` a `v` po stránkách, `konec` skočí
+na nejnovější. Vpravo je pozice, třeba `112-125/300`. Když roluješ
+historii, nové záznamy ti výpis nepodsunou — číslo zežloutne a zůstaneš,
+kde jsi.
 
 ### Co se loguje
 

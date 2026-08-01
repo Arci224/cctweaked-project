@@ -117,11 +117,12 @@ end
 M.logLocal = nil   -- volitelna funkce pro vypis i u sebe
 M.logName  = nil   -- prepise odesilatele v logu (napr. aliasem)
 
-function M.log(level, text)
+-- dir/peer vyplnuje jen PC1, kdyz neco posila konkretnimu pocitaci
+function M.log(level, text, dir, peer)
   local line = { level = level or "info", text = tostring(text),
                  from = M.logName or os.getComputerLabel()
                         or ("PC" .. os.getComputerID()),
-                 id = os.getComputerID() }
+                 id = os.getComputerID(), dir = dir, peer = peer }
   pcall(rednet.broadcast, line, M.LOG_PROTO)
   if M.logLocal then pcall(M.logLocal, line) end
 end
@@ -199,8 +200,8 @@ function M.serve(id, msg, proto)
     for _, n in ipairs(M.fileList()) do
       if fs.exists(n) then files[#files + 1] = n end
     end
-    dbg(("PC%d zada manifest -> v%d, %d souboru")
-      :format(id, M.localVersion(), #files))
+    M.log("debug", ("manifest v%d, %d souboru"):format(M.localVersion(), #files),
+      "out", id)
     rednet.send(id, { version = M.localVersion(), files = files }, M.PROTO)
     return true
   end
@@ -215,13 +216,14 @@ function M.serve(id, msg, proto)
     local content = allowed and readFile(msg.file) or nil
 
     if not content then
-      logErr(("PC%d zada %s - nemam"):format(id, tostring(msg.file)))
+      M.log("error", tostring(msg.file) .. " nemam", "out", id)
       rednet.send(id, { file = msg.file, err = "neni k dispozici" }, M.PROTO)
       return true
     end
 
     local total = math.max(1, math.ceil(#content / M.CHUNK))
-    dbg(("PC%d <- %s (%d B, %d casti)"):format(id, msg.file, #content, total))
+    M.log("debug", ("%s %d B, %d casti"):format(msg.file, #content, total),
+      "out", id)
     for i = 1, total do
       rednet.send(id, {
         file = msg.file, part = i, total = total,
