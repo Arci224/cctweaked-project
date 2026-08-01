@@ -385,6 +385,101 @@ local function problemCount()
   return n
 end
 
+--=====================================================================
+-- ROZESLANI AKTUALIZACE
+--=====================================================================
+-- rednet.broadcast nema adresata ani potvrzeni o doruceni. Vedeme si
+-- proto sami, kdo ma na novou verzi prejit, posilame i adresne podle
+-- ID a po case rekneme, kdo se neozval.
+
+local rollout = {
+  active = false, target = 0, deadline = 0, retries = 0, pending = {},
+}
+local ROLLOUT_WAIT = 45000   -- ms na jeden pokus
+
+-- [id] = jmeno, podle registru drive videnych zarizeni
+local function knownRemotes()
+  local out = {}
+  for _, e in pairs(cfg.expected) do
+    if e.id and not out[e.id] then out[e.id] = e.label or ("PC" .. e.id) end
+  end
+  return out
+end
+
+local function nameList(t)
+  local parts = {}
+  for id, nm in pairs(t) do parts[#parts + 1] = nm .. "(" .. id .. ")" end
+  table.sort(parts)
+  return table.concat(parts, ", ")
+end
+
+local function sendChallenge(targets, version)
+  if not updater then return end
+  for id in pairs(targets) do
+    pcall(rednet.send, id, { cmd = "update", version = version }, updater.PROTO)
+  end
+  -- broadcast navic kvuli pocitacum, ktere jsme jeste nikdy nevideli
+  pcall(rednet.broadcast, { cmd = "update", version = version }, updater.PROTO)
+end
+
+local function startRollout()
+  if not updater then return end
+
+  local target = updater.localVersion()
+  local pending, n = {}, 0
+  for id, nm in pairs(knownRemotes()) do
+    if devices.version[id] ~= target then
+      pending[id] = nm
+      n = n + 1
+    end
+  end
+
+  rollout.target   = target
+  rollout.pending  = pending
+  rollout.retries  = 2
+  rollout.deadline = os.epoch("utc") + ROLLOUT_WAIT
+  rollout.active   = n > 0
+
+  if n == 0 then
+    addLog({ level = "ok", from = "PC1", text = "vsichni uz maji v" .. target })
+  else
+    addLog({ level = "info", from = "PC1",
+             text = "vyzva v" .. target .. " -> " .. nameList(pending) })
+  end
+  sendChallenge(pending, target)
+end
+
+-- vola se z hlavni smycky
+local function tickRollout()
+  if not rollout.active then return end
+
+  for id in pairs(rollout.pending) do
+    if devices.version[id] == rollout.target then rollout.pending[id] = nil end
+  end
+
+  if next(rollout.pending) == nil then
+    addLog({ level = "ok", from = "PC1", text = "vsechny na v" .. rollout.target })
+    rollout.active = false
+    return
+  end
+
+  if os.epoch("utc") < rollout.deadline then return end
+
+  if rollout.retries > 0 then
+    rollout.retries  = rollout.retries - 1
+    rollout.deadline = os.epoch("utc") + ROLLOUT_WAIT
+    addLog({ level = "warn", from = "PC1",
+             text = "opakuji vyzvu: " .. nameList(rollout.pending) })
+    sendChallenge(rollout.pending, rollout.target)
+  else
+    addLog({ level = "error", from = "PC1",
+             text = "neodpovedelo: " .. nameList(rollout.pending) })
+    addLog({ level = "info", from = "PC1",
+             text = "stahnou si ji pri svem dalsim startu" })
+    rollout.active = false
+  end
+end
+
 local function forgetOffline()
   local removed = 0
   for key in pairs(cfg.expected) do
@@ -1833,14 +1928,6 @@ local function pageLog()
   -- Rozeslani je zamerne oddelene od restartu PC1. Vzdalene pocitace
   -- si soubory tahaji prave z PC1, takze musi zustat nabehnute,
   -- dokud se neaktualizuji - restart az nakonec, rucne.
-  local function broadcastUpdate()
-    if not updater then return end
-    pcall(rednet.broadcast,
-      { cmd = "update", version = updater.localVersion() }, updater.PROTO)
-    addLog({ level = "info", from = "PC1",
-             text = "vyzva -> v" .. updater.localVersion() })
-  end
-
   local bw = math.floor((CW - 2) / 3)
   button(CX, H, bw, 1, "Stahnout", colors.blue, colors.white, function()
     if not updater then toast("updater chybi"); return end
@@ -1854,7 +1941,7 @@ local function pageLog()
       toast("chyba, viz log")
     elseif changed then
       addLog({ level = "ok", from = "PC1", text = "stazeno v" .. tostring(ver) })
-      broadcastUpdate()
+      startRollout()
       toast("verze " .. tostring(ver) .. ", rozeslano")
     else
       toast("uz je aktualni")
@@ -1863,7 +1950,7 @@ local function pageLog()
 
   button(CX + bw + 1, H, bw, 1, "Rozeslat", colors.blue, colors.white, function()
     if not updater then toast("updater chybi"); return end
-    broadcastUpdate()
+    startRollout()
     toast("vyzva odeslana")
   end)
 
@@ -2114,6 +2201,7 @@ local function main()
         sampleStorage()
         sampleQuarry()
         checkLowEnergy()
+        tickRollout()
         draw()
         timer = os.startTimer(cfg.refresh)
       elseif ev[2] == localTimer then

@@ -122,6 +122,33 @@ Vzdálený počítač vystupuje pod svým aliasem, ne pod názvem počítače.
 
 Buffer drží 300 řádků.
 
+### Komu se výzva posílá
+
+`rednet.broadcast` nemá adresáta ani potvrzení o doručení. PC1 si proto
+vede vlastní seznam: každý počítač, který se kdy ozval, je v registru
+očekávaných zařízení pod svým ID.
+
+Při *Rozeslat* se výzva pošle **adresně každému známému ID**, které
+ještě nemá cílovou verzi, plus broadcastem navíc kvůli počítačům,
+které PC1 nikdy neviděl. Do logu se vypíše, komu přesně:
+
+```
+vyzva v7 -> Nether main(7), Zakladna(2)
+```
+
+Pak se čeká 45 s. Kdo se neozve, dostane výzvu znovu, celkem třikrát.
+Nakonec se vypíše červeně, kdo se neozval vůbec:
+
+```
+neodpovedelo: Zakladna(2)
+stahnou si ji pri svem dalsim startu
+```
+
+**Retry nespraví vypnutý počítač.** Když je chunk nenačtený, žádný
+program tam neběží a doručit se nedá nic. Skutečná záchrana je, že si
+`boot.lua` vyžádá aktuální verzi sám při startu — takže se to srovná,
+až se ten chunk zase načte.
+
 ### Zpětná vazba
 
 - V záhlaví záložky Log je `v5  2/3 hotovo` — kolik vzdálených počítačů
