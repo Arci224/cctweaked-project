@@ -321,8 +321,11 @@ log("info", ("sender v%s bezi"):format(upd and upd.localVersion() or "?") ..
   (det and " +det" or "") .. (sto and " +bat" or "") ..
   (rdr and " +qry" or ""))
 
+-- Jediny timer. Kazdy dalsi je dalsi vec, kterou muze spolknout
+-- blokujici volani (peripheral, rednet.receive, sleep) - a smycka
+-- pak uvizne, protoze ceka na udalost, ktera uz probehla.
 local timer = os.startTimer(INTERVAL)
-local uiTimer = os.startTimer(2)
+local uiEvery = 0
 local running = true
 
 while running do
@@ -391,11 +394,14 @@ while running do
       rednet.broadcast(payload, RN_PROTO)
       sent = sent + 1
     end
-    timer = os.startTimer(INTERVAL)
 
-  elseif ev[1] == "timer" and ev[2] == uiTimer then
-    status()
-    uiTimer = os.startTimer(2)
+    uiEvery = uiEvery + 1
+    if uiEvery >= 4 then       -- prekresleni obrazovky kazde 2 s
+      uiEvery = 0
+      status()
+    end
+
+    timer = os.startTimer(INTERVAL)
 
   elseif ev[1] == "rednet_message" then
     local _, msg, proto = ev[2], ev[3], ev[4]
@@ -433,9 +439,8 @@ while running do
           os.reboot()
         end
 
-        -- sleep a rednet.receive spolykaly nase timery
+        -- sleep a rednet.receive spolykaly nas timer
         timer = os.startTimer(INTERVAL)
-        uiTimer = os.startTimer(2)
         status()
       end
     end
@@ -467,9 +472,8 @@ while running do
     log("info", "alias: " .. tostring(alias or "(zadny)"))
     status()
 
-    -- read() spolykal i nase timery, musime je nasadit znovu
+    -- read() spolykal i nas timer, musime ho nasadit znovu
     timer = os.startTimer(INTERVAL)
-    uiTimer = os.startTimer(2)
 
   elseif ev[1] == "key" and ev[2] == keys.q then
     running = false

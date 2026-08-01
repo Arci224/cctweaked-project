@@ -2435,14 +2435,23 @@ local function main()
   drawLocal()
 
   local timer = os.startTimer(cfg.refresh)
-  local localTimer = os.startTimer(5)
+  local lastTick = os.epoch("utc")
+  local localEvery = 0   -- terminal pocitace obnovujeme kazdy 10. tik
 
   while state.running do
     local ev = { os.pullEvent() }
     local e = ev[1]
 
+    -- Zachranna brzda proti ztracenemu timeru. Kdyby ho spolklo neco
+    -- blokujiciho, obnovi se tikani pri nejblizsi jine udalosti.
+    if os.epoch("utc") - lastTick > 3000 then
+      lastTick = os.epoch("utc")
+      timer = os.startTimer(0)
+    end
+
     if e == "timer" then
       if ev[2] == timer then
+        lastTick = os.epoch("utc")
         checkAlarm()
         refreshPresence()
         sampleEnergy()
@@ -2452,10 +2461,16 @@ local function main()
         tickRollout()
         tickPresence()
         draw()
+
+        -- Drive na to byl vlastni timer, ale kazdy dalsi timer je
+        -- dalsi vec, kterou muze spolknout blokujici volani.
+        localEvery = localEvery + 1
+        if localEvery >= 10 then
+          localEvery = 0
+          drawLocal()
+        end
+
         timer = os.startTimer(cfg.refresh)
-      elseif ev[2] == localTimer then
-        drawLocal()
-        localTimer = os.startTimer(5)
       end
 
     elseif e == "monitor_touch" then
@@ -2464,6 +2479,11 @@ local function main()
         b.action()
         recalcLayout()
         draw()
+        -- Akce mohla volat neco blokujiciho (http.get, sleep,
+        -- rednet.receive). Ty uvnitr cekaji pres os.pullEvent a
+        -- nesouvisejici udalosti zahazuji - vcetne naseho timeru.
+        -- Bez tohoto radku by se displej uz nikdy neprekreslil.
+        timer = os.startTimer(cfg.refresh)
       end
 
     elseif e == "monitor_resize" or e == "sleepmon_resize" then
