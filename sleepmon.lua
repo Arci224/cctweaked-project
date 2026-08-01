@@ -151,6 +151,19 @@ local function fmtDuration(sec)
   return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
 end
 
+-- delsi useky casu: 2h 05m / 12m 30s / 45s
+local function fmtLong(sec)
+  if not sec or sec ~= sec or sec == math.huge then return "?" end
+  sec = math.floor(sec)
+  if sec >= 3600 then
+    return string.format("%dh %02dm",
+      math.floor(sec / 3600), math.floor(sec % 3600 / 60))
+  elseif sec >= 60 then
+    return string.format("%dm %02ds", math.floor(sec / 60), sec % 60)
+  end
+  return sec .. "s"
+end
+
 local function tickToClock(tk)
   return fmtClock(((tk / 1000) + 6) % 24)
 end
@@ -273,11 +286,21 @@ end
 
 local logs = { lines = {}, max = 300, unseen = 0, errors = 0 }
 
+-- Realny cas, ne herni. Herni hodiny pri spanku preskoci o pul dne
+-- a razitka v logu by prestala davat smysl.
+local function realClock()
+  local ok, ms = pcall(os.epoch, "local")
+  if not ok or type(ms) ~= "number" then ms = os.epoch("utc") end
+  local s = math.floor(ms / 1000)
+  return string.format("%02d:%02d:%02d",
+    math.floor(s / 3600) % 24, math.floor(s / 60) % 60, s % 60)
+end
+
 local function addLog(entry)
   if type(entry) ~= "table" then return end
   local level = tostring(entry.level or "info")
   logs.lines[#logs.lines + 1] = {
-    clock = fmtClock(os.time()),
+    clock = realClock(),
     level = level,
     text  = tostring(entry.text or ""),
     from  = tostring(entry.from or "?"),
@@ -348,7 +371,8 @@ local REMOTE_TIMEOUT = 6000             -- ms bez zpravy = zdroj je mrtvy
 -- byla pripojena. devices.lastSeen je runtime cast (kdy naposledy
 -- odpovedelo). Rozdil obojiho = "melo by tu byt, ale neni".
 
-local devices = { lastSeen = {}, version = {} }   -- version je podle ID pocitace
+-- version a uptime jsou podle ID pocitace, ne podle klice zarizeni
+local devices = { lastSeen = {}, version = {}, uptime = {} }
 
 local function registerDevice(key, info)
   local e = cfg.expected[key]
@@ -477,6 +501,34 @@ local function tickRollout()
     addLog({ level = "info", from = "PC1",
              text = "stahnou si ji pri svem dalsim startu" })
     rollout.active = false
+  end
+end
+
+-- Prechody mezi "hlasi" a "mlci" do logu. Bez casove osy se neda
+-- poznat, jestli zdroj vypadl pri odchodu hrace (chunk) nebo v jinou
+-- chvili (dosah, pad programu).
+local presence = {}
+
+local function tickPresence()
+  for key, e in pairs(cfg.expected) do
+    local ok = (deviceStatus(key) == "OK")
+    if presence[key] == nil then
+      presence[key] = ok
+    elseif presence[key] ~= ok then
+      presence[key] = ok
+
+      -- Uptime pri navratu rozlisi dve uplne jine priciny:
+      --   maly  = pocitac se restartoval, tedy chunk byl odnacteny
+      --   velky = bezel porad, vypadl jen prenos (modem, dosah)
+      local txt = "zmlkl"
+      if ok then
+        local up = e.id and devices.uptime[e.id]
+        txt = "znovu hlasi" ..
+          (up and (", uptime " .. fmtLong(up)) or "")
+      end
+
+      addLog({ level = ok and "ok" or "warn", from = e.label or key, text = txt })
+    end
   end
 end
 
@@ -829,18 +881,6 @@ local function pctColor(p)
   return colors.green
 end
 
--- delsi useky casu: 2h 05m / 12m 30s / 45s
-local function fmtLong(sec)
-  if not sec or sec ~= sec or sec == math.huge then return "?" end
-  sec = math.floor(sec)
-  if sec >= 3600 then
-    return string.format("%dh %02dm", math.floor(sec / 3600), math.floor(sec % 3600 / 60))
-  elseif sec >= 60 then
-    return string.format("%dm %02ds", math.floor(sec / 60), sec % 60)
-  end
-  return sec .. "s"
-end
-
 -- text typu "Vydrzi 2h 05m" / "Plno za 12m" / "Stabilni"
 local function batteryEta()
   -- pro odhad radsi klidny prumer, jinak vydrz poskakuje
@@ -986,17 +1026,20 @@ local function rebuildQuarries()
   end
 end
 
+-- vraci: data, jsou_cerstva
 local function readQuarry(src)
-  if not src then return nil end
+  if not src then return nil, false end
+
   if src.kind == "remote" then
     local r = quarry.remotes[src.id]
-    if not r or os.epoch("utc") - r.lastSeen > REMOTE_TIMEOUT then return nil end
-    return r.q
+    if not r then return nil, false end
+    return r.q, (os.epoch("utc") - r.lastSeen) <= REMOTE_TIMEOUT
   end
+
   local okD, data = pcall(src.dev.getBlockData)
-  if not okD then return nil end
+  if not okD then return nil, false end
   local okS, st = pcall(src.dev.getBlockStates)
-  return parseQuarry(data, okS and st or nil)
+  return parseQuarry(data, okS and st or nil), true
 end
 
 local function histOf(key)
@@ -1007,14 +1050,22 @@ end
 
 local function updateOne(src, now)
   local h = histOf(src.key)
-  local q = readQuarry(src)
-  h.cur = q
-  if not q then return end
+  local q, fresh = readQuarry(src)
+
+  -- Posledni znamy stav si drzime i kdyz spojeni vypadne. Prazdna
+  -- stranka je horsi nez stara data se zretelnou znackou.
+  if q then h.cur = q end
+  h.fresh = fresh
+  if not (q and fresh) then return end
+
+  h.lastOk = now
   markSeen(src.key)
 
   local done = quarryProgress(q, src.key)
   if not done then return end
 
+  -- vzorky pridavame jen z cerstvych dat, jinak by zmrzly stav
+  -- stahoval tempo k nule a odhad by se rozjel
   h.samples[#h.samples + 1] = { t = now, done = done }
   while #h.samples > 1 and now - h.samples[1].t > quarry.longWin do
     table.remove(h.samples, 1)
@@ -1102,6 +1153,8 @@ local function onRednet(id, msg, proto)
   local name = msg.alias or msg.label or ("PC" .. id)
   -- Zmenu verze hlasime do logu - je to jedina primá zpetná vazba,
   -- ze si vzdaleny pocitac update opravdu stahl.
+  if tonumber(msg.up) then devices.uptime[id] = tonumber(msg.up) end
+
   local rv = tonumber(msg.ver)
   if rv and devices.version[id] ~= rv then
     if devices.version[id] then
@@ -1752,17 +1805,27 @@ local function pageQuarry()
       local nameW = 11
       text(CX, y, s.label:sub(1, nameW), colors.white, BG)
 
+      local stale = not (h and h.fresh)
       if not done then
-        text(CX + nameW + 1, y, (h and h.cur) and "?" or "offline", BAD, BG)
+        text(CX + nameW + 1, y, "ceka na data", MUTED, BG)
       else
         local p = done / total
-        local pc = (p >= 1) and colors.green or colors.lightBlue
+        local pc = colors.gray
+        if not stale then pc = (p >= 1) and colors.green or colors.lightBlue end
+
         text(CX + nameW + 1, y, string.format("%5.1f%%", p * 100), pc, BG)
         local barX = CX + nameW + 8
         local barW = (CX + CW - 9) - barX
         if barW >= 4 then drawBar(barX, y, barW, p, pc) end
-        local eta = quarryEta(s.key)
-        textRight(CX, CW, y, eta and fmtLong(eta) or "--", MUTED, BG)
+
+        -- pri vypadku ukazujeme posledni znamy postup, ale misto
+        -- odhadu rovnou duvod, proc se uz nehybe
+        if stale then
+          textRight(CX, CW, y, "offline", BAD, BG)
+        else
+          local eta = quarryEta(s.key)
+          textRight(CX, CW, y, eta and fmtLong(eta) or "--", MUTED, BG)
+        end
       end
 
       -- cely radek je klikaci, otevre detail
@@ -1788,16 +1851,23 @@ local function pageQuarry()
   end
 
   if not q then
-    text(CX, y, src.kind == "remote" and "Spojeni vypadlo" or "Blok neodpovida", BAD, BG)
+    text(CX, y, src.kind == "remote" and "Zadna data" or "Blok neodpovida", BAD, BG)
     y = y + 1
-    text(CX, y, "celi reader opravdu quarry?", MUTED, BG)
+    text(CX, y, src.kind == "remote" and "vysilac se jeste neozval"
+      or "celi reader opravdu quarry?", MUTED, BG)
     return
   end
 
+  local stale = not (hist and hist.fresh)
+
   text(CX, y, src.label, colors.white, BG)
-  local stCol = colors.lightGray
-  if q.working == false then stCol = colors.orange end
-  textRight(CX, CW, y, q.state, stCol, BG)
+  if stale then
+    textRight(CX, CW, y, "OFFLINE", BAD, BG)
+  else
+    local stCol = colors.lightGray
+    if q.working == false then stCol = colors.orange end
+    textRight(CX, CW, y, q.state, stCol, BG)
+  end
   y = y + 1
 
   local done, total, sx, sz, layers, bot = quarryProgress(q, src.key)
@@ -1830,9 +1900,14 @@ local function pageQuarry()
   else
     local big = eta and etaClock(eta)
     if big and (H - y) >= 7 then
-      drawBig(CX + math.floor((CW - bigWidth(big)) / 2), y, big, colors.white, BG)
+      -- pri vypadku sedive: quarry mohla mezitim pokracovat, jen
+      -- o tom nevime, takze je to posledni znamy odhad
+      drawBig(CX + math.floor((CW - bigWidth(big)) / 2), y, big,
+        stale and colors.gray or colors.white, BG)
       y = y + 5
-      textCenter(CX, CW, y, "hodin : minut do dotezeni", MUTED, BG)
+      textCenter(CX, CW, y,
+        stale and "posledni znamy odhad" or "hodin : minut do dotezeni",
+        MUTED, BG)
       y = y + 1
     elseif eta then
       -- pres 99 hodin uz se do velkych cislic nevejde
@@ -1846,7 +1921,11 @@ local function pageQuarry()
 
   -- na cem odhad stoji; bez toho nejde poznat, jak moc mu verit
   if y <= H - 1 then
-    if avg then
+    if stale then
+      local age = hist.lastOk and (os.epoch("utc") - hist.lastOk) / 1000
+      text(CX, y, "posledni data pred " ..
+        (age and fmtLong(age) or "?"), BAD, BG)
+    elseif avg then
       text(CX, y, string.format("podle %.0f bl/s za %s", avg, fmtLong(avgDt)),
         colors.gray, BG)
     end
@@ -1914,6 +1993,10 @@ local function pageLog()
     text(CX, y, "zatim nic", colors.gray, BG)
   end
 
+  -- Zdroj pisemene jen kdyz se zmeni. Behem aktualizace jde deset
+  -- radku po sobe od stejneho pocitace a jmeno by jen ubiralo misto
+  -- na text, ktery se do sirky monitoru sotva vejde.
+  local lastFrom = nil
   for i = first, #logs.lines do
     local l = logs.lines[i]
     local col = colors.lightGray
@@ -1921,7 +2004,10 @@ local function pageLog()
     elseif l.level == "warn" then col = colors.orange
     elseif l.level == "ok" then col = colors.green
     elseif l.level == "debug" then col = colors.gray end
-    text(CX, y, (l.clock .. " " .. l.from .. ": " .. l.text):sub(1, CW), col, BG)
+
+    local prefix = (l.from ~= lastFrom) and (l.from .. " ") or ""
+    lastFrom = l.from
+    text(CX, y, (l.clock .. " " .. prefix .. l.text):sub(1, CW), col, BG)
     y = y + 1
   end
 
@@ -1973,38 +2059,46 @@ local function pageDevices()
     probs == 0 and OK or BAD, BG)
   y = y + 2
 
-  -- jeden radek tabulky: nazev | detail | stav vpravo
-  local function row(name, detail, stat, col)
+  -- Jeden radek tabulky: nazev | detail | verze | stav vpravo.
+  -- Verze ma vlastni barvu, aby zaostaly pocitac byl videt na prvni
+  -- pohled i kdyz jinak funguje.
+  local function row(name, detail, stat, col, ver, verCol)
     if y > H - 2 then return false end
     text(CX, y, name:sub(1, 9), MUTED, BG)
-    text(CX + 10, y, detail:sub(1, math.max(1, CW - 19)), colors.white, BG)
+
+    local space = math.max(1, CW - 19)
+    detail = detail:sub(1, space)
+    text(CX + 10, y, detail, colors.white, BG)
+    if ver then
+      text(CX + 10 + #detail + 1, y, ver, verCol or colors.gray, BG)
+    end
+
     textRight(CX, CW, y, stat, col, BG)
     y = y + 1
     return true
   end
 
-  -- zakladni periferie hlavniho pocitace
-  row("Monitor", tostring(cfg.monitorSide) .. " " .. W .. "x" .. H, "OK", OK)
-  row("Speaker", speaker and tostring(cfg.speakerSide) or "nenalezen",
-    speaker and "OK" or "CHYBI", speaker and OK or BAD)
+  -- Zakladni periferie vypisujeme jen kdyz neco chybi. Kdyz jsou
+  -- v poradku, jen zabiraji radky - "vse OK" v zahlavi staci.
+  local shownCore = false
+  if not speaker then
+    row("Speaker", "nenalezen", "CHYBI", BAD)
+    shownCore = true
+  end
 
   local nModem = 0
   for _, name in ipairs(peripheral.getNames()) do
-    if peripheral.getType(name) == "modem" then
-      nModem = nModem + 1
-      local m = peripheral.wrap(name)
-      local wl = m and m.isWireless and m.isWireless()
-      row("Modem", name .. (wl and " bezdrat" or " kabel"), "OK", OK)
-    end
+    if peripheral.getType(name) == "modem" then nModem = nModem + 1 end
   end
   if nModem == 0 then
     row("Modem", "zadny - rednet nejede", "CHYBI", colors.orange)
+    shownCore = true
   end
 
-  -- evidovane detektory (i ty, ktere prave nehlasi)
-  y = y + 1
+  -- evidovana stanoviste (i ta, ktera prave nehlasi)
+  if shownCore then y = y + 1 end
   if y <= H - 2 then
-    text(CX, y, "Detektory a baterie:", MUTED, BG); y = y + 1
+    text(CX, y, "Zdroje dat:", MUTED, BG); y = y + 1
   end
 
   local keys = {}
@@ -2029,13 +2123,23 @@ local function pageDevices()
         detail = "rednet PC" .. tostring(e.id)
       end
 
-      -- verzi hlasi vzdaleny pocitac v kazde zprave; kdyz nesedi
-      -- s PC1, je videt, ze mu update jeste nedosel
-      -- "v?" znamena, ze pocitac verzi vubec nehlasi, tedy bezi na
-      -- starem kodu, ktery ji jeste neposilal
-      if e.id then detail = detail .. " v" .. (devices.version[e.id] or "?") end
       if st ~= "OK" and age then detail = detail .. " " .. fmtDuration(age) end
-      if row(tostring(e.label), detail, st, col) then shown = shown + 1 else break end
+
+      -- Verze kreslime zvlast, aby sla obarvit. Cervene = jina nez
+      -- ma PC1, "v?" = pocitac verzi vubec nehlasi, tedy bezi na
+      -- starem kodu, ktery ji jeste neposilal.
+      local ver, verCol
+      if e.id and updater then
+        local theirs = devices.version[e.id]
+        ver = "v" .. (theirs or "?")
+        verCol = (theirs == updater.localVersion()) and colors.gray or colors.red
+      end
+
+      if row(tostring(e.label), detail, st, col, ver, verCol) then
+        shown = shown + 1
+      else
+        break
+      end
     end
     if #keys > shown and y <= H - 1 then
       text(CX, y, "+" .. (#keys - shown) .. " dalsich", colors.gray, BG)
@@ -2056,10 +2160,19 @@ end
 
 local function pageInfo()
   local y = CY + 1
-  text(CX, y, "SleepMon " .. VERSION, colors.white, BG); y = y + 2
+  text(CX, y, "SleepMon " .. VERSION, colors.white, BG)
+  if updater then
+    textRight(CX, CW, y, "balik v" .. updater.localVersion(), colors.white, BG)
+  end
+  y = y + 2
   text(CX, y, "Herni tik: " .. math.floor(mcTicks()), MUTED, BG); y = y + 1
   text(CX, y, "Herni den: " .. os.day(), MUTED, BG); y = y + 1
   text(CX, y, "ID pocitace: " .. os.getComputerID(), MUTED, BG); y = y + 1
+  -- monitor a speaker uz nejsou v Zarizeni, kdyz funguji
+  text(CX, y, "Monitor: " .. tostring(cfg.monitorSide) ..
+    " " .. W .. "x" .. H, MUTED, BG); y = y + 1
+  text(CX, y, "Speaker: " .. (speaker and tostring(cfg.speakerSide) or "chybi"),
+    speaker and MUTED or BAD, BG); y = y + 1
   text(CX, y, "Uptime: " .. fmtDuration(os.clock()), MUTED, BG); y = y + 2
   text(CX, y, "Stav periferii: zalozka Zarizeni", MUTED, BG); y = y + 2
   text(CX, y, "Ukonceni: klavesa Q na pocitaci.", MUTED, BG); y = y + 1
@@ -2138,8 +2251,9 @@ function draw()
     if os.epoch("utc") > state.toast.until_ then
       state.toast = nil
     else
+      -- na radek 2, aby neprekryval zahlavi stranky (verzi, stav)
       local s = " " .. state.toast.text .. " "
-      textCenter(CX, CW, CY, s, colors.black, colors.yellow)
+      textCenter(CX, CW, 2, s, colors.black, colors.yellow)
     end
   end
 
@@ -2202,6 +2316,7 @@ local function main()
         sampleQuarry()
         checkLowEnergy()
         tickRollout()
+        tickPresence()
         draw()
         timer = os.startTimer(cfg.refresh)
       elseif ev[2] == localTimer then

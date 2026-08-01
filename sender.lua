@@ -342,6 +342,8 @@ while running do
     local payload = {
       label = label, alias = alias,
       ver = upd and upd.localVersion() or nil,
+      -- uptime rozlisi "restartoval se" od "jen vypadlo spojeni"
+      up = math.floor(os.clock()),
     }
     local any = false
 
