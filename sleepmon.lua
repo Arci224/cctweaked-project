@@ -30,6 +30,8 @@ local cfg = {
   textScale     = 1,          -- 0.5 / 1 / 1.5 / 2
   alarmEnabled  = true,
   alarmInterval = 60,         -- realne sekundy mezi zvuky
+  chatEnabled   = true,       -- psat upozorneni i do chatu (Chat Box)
+  chatPrefix    = "SleepMon",
   soundName     = "minecraft:block.note_block.bell",
   volume        = 1.0,
   pitch         = 1.0,
@@ -117,6 +119,21 @@ cfg.monitorSide = monName
 
 local speaker, spkName = findPeripheral(cfg.speakerSide, "speaker")
 if speaker then cfg.speakerSide = spkName end
+
+-- Chat Box (Advanced Peripherals) je volitelny. Nazev typu se lisi
+-- podle verze modu, stejne jako u ostatnich jeho bloku.
+local CHAT_TYPES = { chat_box = true, chatBox = true }
+
+local function findChatBox()
+  for _, name in ipairs(peripheral.getNames()) do
+    if CHAT_TYPES[peripheral.getType(name)] then
+      return peripheral.wrap(name), name
+    end
+  end
+  return nil, nil
+end
+
+local chatBox, chatName = findChatBox()
 
 mon.setTextScale(cfg.textScale)
 
@@ -345,6 +362,19 @@ local function playAlarm()
   return true
 end
 
+-- Chat vykresluje Minecraft, ne font CC, takze tady diakritika
+-- funguje - staci zapnout utf8Support (posledni parametr).
+local function chatSay(msg)
+  if not chatBox then return false, "chybi chat box" end
+
+  local ok, res, why = pcall(chatBox.sendMessage,
+    msg, cfg.chatPrefix, "[]", "&b", nil, true)
+  if not ok then return false, tostring(res) end
+  -- pri odmitnuti (napr. cooldown proti spamu) vraci nil + duvod
+  if res == nil then return false, tostring(why or "odmitnuto") end
+  return true
+end
+
 local function checkAlarm()
   local sleepable = canSleep()
 
@@ -355,18 +385,31 @@ local function checkAlarm()
   end
   state.wasSleep = sleepable
 
-  if not (sleepable and cfg.alarmEnabled and speaker) then return end
+  -- zvuk a chat jdou spolecne, ale kazdy se da vypnout zvlast
+  local soundOn = cfg.alarmEnabled and speaker
+  local chatOn  = cfg.chatEnabled and chatBox
+  if not (sleepable and (soundOn or chatOn)) then return end
 
   local now = os.epoch("utc")
   if now - state.lastAlarm >= cfg.alarmInterval * 1000 then
     state.lastAlarm = now
     state.alarmCount = state.alarmCount + 1
-    playAlarm()
+
+    if soundOn then playAlarm() end
+
+    if chatOn then
+      local ok, why = chatSay(("Můžeš spát - noc končí v %s (zbývá %s)")
+        :format(tickToClock(cfg.sleepEnd), fmtLong(realSecondsUntil(cfg.sleepEnd + 1))))
+      if not ok then
+        addLog({ level = "warn", text = "chat: " .. tostring(why) })
+      end
+    end
   end
 end
 
 local function secondsToNextAlarm()
-  if not (cfg.alarmEnabled and speaker and canSleep()) then return nil end
+  local active = (cfg.alarmEnabled and speaker) or (cfg.chatEnabled and chatBox)
+  if not (active and canSleep()) then return nil end
   local left = cfg.alarmInterval - (os.epoch("utc") - state.lastAlarm) / 1000
   return math.max(0, left)
 end
@@ -1358,23 +1401,43 @@ end
 
 local function pageAlarm()
   local y = CY + 1
-  text(CX, y, "Zvukova signalizace", colors.white, BG); y = y + 2
+  text(CX, y, "Upozorneni na spanek", colors.white, BG); y = y + 2
 
-  local st = cfg.alarmEnabled and "ZAPNUT" or "VYPNUT"
-  text(CX, y, "Stav:     ", MUTED, BG)
-  text(CX + 10, y, st, cfg.alarmEnabled and OK or BAD, BG); y = y + 1
+  text(CX, y, "Zvuk:     ", MUTED, BG)
+  text(CX + 10, y, cfg.alarmEnabled and "ZAPNUT" or "VYPNUT",
+    cfg.alarmEnabled and OK or MUTED, BG)
+  textRight(CX, CW, y, speaker and cfg.soundName:match("[^.]+$") or "bez speakeru",
+    speaker and MUTED or BAD, BG); y = y + 1
+
+  text(CX, y, "Chat:     ", MUTED, BG)
+  text(CX + 10, y, cfg.chatEnabled and "ZAPNUT" or "VYPNUT",
+    cfg.chatEnabled and OK or MUTED, BG)
+  textRight(CX, CW, y, chatBox and tostring(chatName):sub(1, 14) or "bez chat boxu",
+    chatBox and MUTED or MUTED, BG); y = y + 1
+
   text(CX, y, "Interval: " .. cfg.alarmInterval .. " s", MUTED, BG); y = y + 1
-  text(CX, y, "Zvuk:     " .. cfg.soundName:match("[^.]+$"), MUTED, BG); y = y + 1
-  text(CX, y, "Pipnuti:  " .. state.alarmCount .. " (tuto noc)", MUTED, BG); y = y + 2
+  text(CX, y, "Odeslano: " .. state.alarmCount .. " (tuto noc)", MUTED, BG); y = y + 2
 
-  button(CX, y, 14, 1, cfg.alarmEnabled and "Vypnout" or "Zapnout",
+  button(CX, y, 10, 1, cfg.alarmEnabled and "Zvuk vyp" or "Zvuk zap",
     cfg.alarmEnabled and colors.red or colors.green, colors.white, function()
       cfg.alarmEnabled = not cfg.alarmEnabled
       saveConfig()
-      toast(cfg.alarmEnabled and "Alarm zapnut" or "Alarm vypnut")
     end)
-  button(CX + 16, y, 14, 1, "Test zvuku", colors.blue, colors.white, function()
-    if playAlarm() then toast("Prehrano") else toast("Speaker chybi!") end
+  button(CX + 11, y, 10, 1, cfg.chatEnabled and "Chat vyp" or "Chat zap",
+    cfg.chatEnabled and colors.red or colors.green, colors.white, function()
+      cfg.chatEnabled = not cfg.chatEnabled
+      saveConfig()
+    end)
+  button(CX + 22, y, 6, 1, "Test", colors.blue, colors.white, function()
+    local didSound = playAlarm()
+    local okChat, why = chatSay("Test upozornění ze SleepMonu")
+    if okChat then
+      toast(didSound and "zvuk + chat" or "chat")
+    elseif didSound then
+      toast("zvuk, chat: " .. tostring(why))
+    else
+      toast("nic: " .. tostring(why))
+    end
   end)
   y = y + 2
 
@@ -2320,6 +2383,8 @@ local function pageInfo()
     " " .. W .. "x" .. H, MUTED, BG); y = y + 1
   text(CX, y, "Speaker: " .. (speaker and tostring(cfg.speakerSide) or "chybi"),
     speaker and MUTED or BAD, BG); y = y + 1
+  text(CX, y, "Chat box: " .. (chatBox and tostring(chatName) or "neni"),
+    MUTED, BG); y = y + 1
   text(CX, y, "Uptime: " .. fmtDuration(os.clock()), MUTED, BG); y = y + 2
   text(CX, y, "Stav periferii: zalozka Zarizeni", MUTED, BG); y = y + 2
   text(CX, y, "Ukonceni: klavesa Q na pocitaci.", MUTED, BG); y = y + 1
@@ -2530,6 +2595,7 @@ local function main()
       local m = findPeripheral(cfg.monitorSide, "monitor")
       if m then mon = m; mon.setTextScale(cfg.textScale); recalcLayout() end
       speaker = (findPeripheral(cfg.speakerSide, "speaker"))
+      chatBox, chatName = findChatBox()
       openModems()
       rebuildSources()
       rebuildBatteries()

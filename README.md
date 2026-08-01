@@ -222,6 +222,23 @@ Každý vzdálený počítač si počká `ID % 12` sekund, než si o soubory
 Co to **neodchytí**: běhovou chybu, která se projeví až po čase, a
 logickou chybu. Kód projde překladem a spustí se.
 
+## Upozornění na spánek
+
+Když nastane okno spánku, ozve se speaker a zároveň přijde zpráva do
+chatu — obojí jednou za `alarmInterval` (výchozí 60 s reálného času).
+
+```
+[SleepMon] Můžeš spát - noc končí v 05:27 (zbývá 7m 12s)
+```
+
+Chat vyžaduje **Chat Box** z Advanced Peripherals připojený k PC1.
+Zvuk a chat se zapínají zvlášť v záložce **Alarm**, takže může běžet
+jen jedno z nich. Tlačítko *Test* pošle obojí naráz.
+
+Chat vykresluje Minecraft, ne font CC:Tweaked, takže tady diakritika
+funguje (posílá se s `utf8Support`). Texty na monitoru zůstávají bez
+háčků, protože tam by se nezobrazily.
+
 ## Alias stanoviště
 
 Na vzdáleném počítači stiskni **A** a napiš jméno (max 16 znaků).
