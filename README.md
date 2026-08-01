@@ -72,16 +72,21 @@ nebo `remote`.
 1. Uprav soubory
 2. **Zvyš `version` v `manifest.json`** — bez toho se nic nestáhne
 3. `git push`
-4. Na PC1 v záložce **Zarizeni** stiskni **Stahnout** — stáhne z GitHubu
-   a rovnou rozešle výzvu ostatním
-5. Počkej, až budou u všech počítačů stejná čísla verzí
-6. Teprve pak **Restart** na PC1
+4. Na PC1 v záložce **Zarizeni** stiskni **Stahnout** — stáhne jen na PC1
+5. **Restart** PC1 a ověř, že nová verze běží
+6. Teprve pak **Rozeslat** ostatním
+7. Počkej, až budou u všech počítačů stejná čísla verzí
+
+Stažení a rozeslání jsou záměrně dvě akce. Kdyby to bylo spojené,
+rozbitá verze se dostane na stroj v jiné dimenzi dřív, než si jí
+všimneš.
 
 Ovládání je v záložce Zarizeni:
 
 | Prvek | Co dělá |
 |---|---|
-| `Stahnout` | PC1 stáhne z GitHubu a rozešle výzvu ostatním |
+| `Stahnout` | PC1 stáhne novou verzi z GitHubu, nikam ji neposílá |
+| `Rozeslat` | pošle výzvu všem, kdo nemají verzi PC1 (s opakováním) |
 | `Restart` | restartuje PC1 |
 | `D` u zdroje | detail toho stroje |
 | `>` u zdroje | pošle výzvu k aktualizaci jen tomu počítači |

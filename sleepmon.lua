@@ -1262,6 +1262,9 @@ local HEADER  = colors.blue
 local OK      = colors.green
 local BAD     = colors.red
 local MUTED   = colors.lightGray
+-- Den neni chyba, jen se v nem neda spat - proto modra, ne cervena.
+-- Cervena zustava vyhrazena pro skutecne problemy.
+local DAY     = colors.lightBlue
 
 -- pruh celeho herniho dne s vyznacenym oknem spanku
 local function drawDayBar(x, y, w)
@@ -1288,7 +1291,7 @@ end
 
 local function pageDash()
   local sleepable = canSleep()
-  local statusColor = sleepable and OK or BAD
+  local statusColor = sleepable and OK or DAY
   local clock = fmtClock(os.time())
 
   -- velke hodiny
@@ -1296,10 +1299,12 @@ local function pageDash()
   local bx = CX + math.floor((CW - bw) / 2)
   drawBig(bx, CY + 1, clock, statusColor, BG)
 
-  -- stav
-  local label = sleepable and " LZE SPAT " or " NELZE SPAT "
+  -- Ceduli ukazujeme jen kdyz se spat da. Pres den neni co hlasit,
+  -- barva hodin to rekne sama.
   fill(CX, CY + 7, CW, 1, BG)
-  textCenter(CX, CW, CY + 7, label, colors.black, statusColor)
+  if sleepable then
+    textCenter(CX, CW, CY + 7, " LZE SPAT ", colors.black, OK)
+  end
 
   -- odpocet
   local line
@@ -2156,8 +2161,12 @@ local function pageDevices()
   y = y + 1
 
   -- ovladani hlavniho pocitace
+  -- Stazeni a rozeslani jsou zamerne dve akce. Rozeslat se ma az
+  -- potom, co si na PC1 overis, ze nova verze bezi - jinak posles
+  -- rozbitou verzi na stroj, kam se spatne chodi.
   text(CX, y, "PC1", MUTED, BG)
-  button(CX + 12, y, 10, 1, "Stahnout", colors.blue, colors.white, function()
+
+  button(CX + 4, y, 10, 1, "Stahnout", colors.blue, colors.white, function()
     if not updater then toast("updater chybi"); return end
     if not updater.httpAvailable() then toast("HTTP je vypnute"); return end
 
@@ -2169,15 +2178,19 @@ local function pageDevices()
       toast("chyba, viz Log")
     elseif changed then
       addLog({ level = "ok", text = "stazeno v" .. tostring(ver) })
-      -- hromadne rozeslani vcetne opakovani a hlaseni, kdo se neozval;
-      -- jednotlive ">" u zdroju slouzi na doslani konkretnimu PC
-      startRollout()
-      toast("stazeno v" .. tostring(ver) .. ", rozeslano")
+      toast("stazeno v" .. tostring(ver))
     else
       toast("uz je aktualni")
     end
   end)
-  button(CX + 23, y, 9, 1, "Restart", colors.gray, colors.white, function()
+
+  button(CX + 15, y, 10, 1, "Rozeslat", colors.blue, colors.white, function()
+    if not updater then toast("updater chybi"); return end
+    startRollout()
+    toast("rozesilam")
+  end)
+
+  button(CX + 26, y, 9, 1, "Restart", colors.gray, colors.white, function()
     draw()
     sleep(0.5)
     os.reboot()
@@ -2339,7 +2352,7 @@ function draw()
 
   -- hodiny vpravo nahore
   local sleepable = canSleep()
-  local clockBg = sleepable and OK or BAD
+  local clockBg = sleepable and OK or DAY
   local clockStr = " " .. fmtClock(os.time()) .. " "
   fill(W - #clockStr + 1, 1, #clockStr, 1, clockBg)
   text(W - #clockStr + 1, 1, clockStr, colors.black, clockBg)
@@ -2405,9 +2418,8 @@ local function drawLocal()
   print("Monitor: " .. tostring(cfg.monitorSide))
   print("Speaker: " .. (speaker and cfg.speakerSide or "NENALEZEN"))
   print("")
-  term.setTextColor(canSleep() and colors.green or colors.red)
-  print(canSleep() and "LZE SPAT  " .. fmtClock(os.time())
-                    or "NELZE SPAT  " .. fmtClock(os.time()))
+  term.setTextColor(canSleep() and colors.green or colors.lightBlue)
+  print(fmtClock(os.time()) .. (canSleep() and "  LZE SPAT" or ""))
   term.setTextColor(colors.gray)
   print("")
   print("Stisknuti Q ukonci program.")
