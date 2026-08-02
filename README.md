@@ -289,3 +289,6 @@ na jednotce nezávislé.
 - Když quarry nemá nastavené `digMinY`, spodní hranice se odhaduje a
   přímo škáluje celkový objem. **Overworld má dno v −64, Nether a End
   v 0** — nastavuje se pro každý stroj zvlášť na jeho detailu.
+- Jakmile stroj ohlásí `FINISHED`, bere se to jako hotovo bez ohledu
+  na nastavené dno — quarry se zastaví na bedrocku své dimenze. Detail
+  pak napíše, na jakém Y skončila, ať víš, co nastavit příště.

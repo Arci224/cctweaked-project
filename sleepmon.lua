@@ -1087,6 +1087,13 @@ local function quarryProgress(q, key)
   return done, total, sx, sz, layers, bot
 end
 
+-- Stroj sam hlasi, ze dokopal. Je to spolehlivejsi nez nas odhad dna:
+-- quarry se zastavi na bedrocku dane dimenze, coz nemusi byt hodnota,
+-- kterou mame nastavenou.
+local function quarryFinished(q)
+  return q ~= nil and tostring(q.state):upper() == "FINISHED"
+end
+
 local function qsrc()
   return quarry.list[quarry.index]
 end
@@ -1962,7 +1969,8 @@ local function pageQuarry()
       if not done then
         text(CX + nameW + 1, y, "ceka na data", MUTED, BG)
       else
-        local p = done / total
+        local fin = quarryFinished(h and h.cur)
+        local p = fin and 1 or (done / total)
         local pc = colors.gray
         if not stale then pc = (p >= 1) and colors.green or colors.lightBlue end
 
@@ -1975,6 +1983,8 @@ local function pageQuarry()
         -- odhadu rovnou duvod, proc se uz nehybe
         if stale then
           textRight(CX, CW, y, "offline", BAD, BG)
+        elseif fin then
+          textRight(CX, CW, y, "hotovo", colors.green, BG)
         else
           local eta = quarryEta(s.key)
           textRight(CX, CW, y, eta and fmtLong(eta) or "--", MUTED, BG)
@@ -2033,11 +2043,19 @@ local function pageQuarry()
   textRight(CX, CW, y, "Y " .. q.maxY .. ".." .. bot, MUTED, BG)
   y = y + 2
 
-  -- postup jako kontext k odhadu
-  local p = done / total
+  -- Kdyz stroj hlasi FINISHED, je hotovo bez ohledu na nase dno.
+  -- Quarry se zastavi na bedrocku dane dimenze - v Netheru kolem nuly,
+  -- takze predpokladanych -64 by drzelo procenta natrvalo pod stem.
+  local fin = quarryFinished(q)
+  local p = fin and 1 or (done / total)
   local col = (p >= 1) and colors.green or colors.lightBlue
+
   text(CX, y, string.format("%.2f %%", p * 100), col, BG)
-  textRight(CX, CW, y, fmtFE(done) .. " / " .. fmtFE(total) .. " bl", MUTED, BG)
+  if fin then
+    textRight(CX, CW, y, "skoncila na Y " .. tostring(q.hy), MUTED, BG)
+  else
+    textRight(CX, CW, y, fmtFE(done) .. " / " .. fmtFE(total) .. " bl", MUTED, BG)
+  end
   y = y + 1
   drawBar(CX, y, CW, p, col)
   y = y + 2
@@ -2046,7 +2064,7 @@ local function pageQuarry()
   local eta = quarryEta(src.key)
   local avg, avgDt, avgBlocks = quarryRate(src.key)
 
-  if p >= 1 then
+  if fin or p >= 1 then
     fill(CX, y + 1, CW, 1, BG)
     textCenter(CX, CW, y + 1, " DOTEZENO ", colors.black, colors.green)
     y = y + 3
@@ -2079,6 +2097,14 @@ local function pageQuarry()
       local age = hist.lastOk and (os.epoch("utc") - hist.lastOk) / 1000
       text(CX, y, "posledni data pred " ..
         (age and fmtLong(age) or "?"), BAD, BG)
+    elseif fin then
+      -- rovnou rekneme, o kolik bylo nastavene dno vedle
+      if q.hy and bot and q.hy ~= bot then
+        text(CX, y, "dno bylo nastaveno " .. bot .. ", skutecne " .. q.hy,
+          colors.orange, BG)
+      else
+        text(CX, y, "dotezeno az na dno", colors.gray, BG)
+      end
     elseif avg then
       text(CX, y, string.format("%.0f bl/s z %d vrstev za %s",
         avg, math.floor(avgBlocks / (sx * sz) + 0.5), fmtLong(avgDt)),
