@@ -239,6 +239,18 @@ Chat vykresluje Minecraft, ne font CC:Tweaked, takže tady diakritika
 funguje (posílá se s `utf8Support`). Texty na monitoru zůstávají bez
 háčků, protože tam by se nezobrazily.
 
+### Reálný čas
+
+`os.epoch` běží **na serveru**, ne na tvém počítači — ukazuje tedy
+serverové pásmo a serverové hodiny. Když nesedí, srovnej to v záložce
+**Nastaveni** tlačítky `-1h` / `-15m` / `-1m` / `+1m` / `+15m` / `+1h`.
+Hodinový a čtvrthodinový krok srovná pásmo, minutový rozejité hodiny
+serveru. Posun se ukládá a projeví se v chatu i v razítkách logu.
+
+V **Info** je vidět, ze kterého zdroje se čas bere (`local` nebo `utc`)
+a jaký posun je nastavený. Když je zdroj `utc`, server nehlásí své
+pásmo a rozdíl bude celé hodiny.
+
 ## Alias stanoviště
 
 Na vzdáleném počítači stiskni **A** a napiš jméno (max 16 znaků).

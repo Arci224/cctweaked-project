@@ -32,6 +32,9 @@ local cfg = {
   alarmInterval = 60,         -- realne sekundy mezi zvuky
   chatEnabled   = true,       -- psat upozorneni i do chatu (Chat Box)
   chatPrefix    = "SleepMon",
+  -- Rucni posun realnych hodin v minutach. os.epoch bezi na serveru,
+  -- takze ukazuje jeho pasmo a jeho (treba rozejite) hodiny.
+  clockOffset   = 0,
   soundName     = "minecraft:block.note_block.bell",
   volume        = 1.0,
   pitch         = 1.0,
@@ -315,10 +318,17 @@ end
 
 -- Realny cas, ne herni. Herni hodiny pri spanku preskoci o pul dne
 -- a razitka v logu by prestala davat smysl.
+local clockSource = "?"   -- pro diagnostiku na strance Info
+
 local function realEpoch()
   local ok, ms = pcall(os.epoch, "local")
-  if ok and type(ms) == "number" then return ms end
-  return os.epoch("utc")
+  if ok and type(ms) == "number" then
+    clockSource = "local"
+  else
+    clockSource = "utc"
+    ms = os.epoch("utc")
+  end
+  return ms + (cfg.clockOffset or 0) * 60000
 end
 
 local function realClock()
@@ -1522,6 +1532,32 @@ local function pageConf()
       end)
     bx = bx + 9
   end
+  y = row + 2
+
+  -- Realny cas bere os.epoch, ktery bezi na serveru - ukazuje tedy
+  -- jeho pasmo a jeho hodiny. Kdyz nesedi, srovna se to tady.
+  if y <= H - 1 then
+    text(CX, y, "Cas: " .. realClock():sub(1, 5), colors.white, BG)
+    textRight(CX, CW, y, string.format("zdroj %s, posun %+d min",
+      clockSource, cfg.clockOffset), MUTED, BG)
+    y = y + 1
+
+    -- Minutovy krok je tu kvuli rozejitym hodinam serveru; ty se
+    -- casto lisi o jednotky minut, na coz je ctvrthodina hruba.
+    local steps = {
+      { "-1h", -60 }, { "-15m", -15 }, { "-1m", -1 },
+      { "+1m", 1 }, { "+15m", 15 }, { "+1h", 60 },
+    }
+    local sbx = CX
+    for _, s in ipairs(steps) do
+      button(sbx, y, 5, 1, s[1], PANEL, colors.white, function()
+        cfg.clockOffset = (cfg.clockOffset + s[2]) % 1440
+        if cfg.clockOffset > 720 then cfg.clockOffset = cfg.clockOffset - 1440 end
+        saveConfig()
+      end)
+      sbx = sbx + 6
+    end
+  end
 end
 
 --=====================================================================
@@ -2406,6 +2442,9 @@ local function pageInfo()
   text(CX, y, "Herni tik: " .. math.floor(mcTicks()), MUTED, BG); y = y + 1
   text(CX, y, "Herni den: " .. os.day(), MUTED, BG); y = y + 1
   text(CX, y, "ID pocitace: " .. os.getComputerID(), MUTED, BG); y = y + 1
+  local rc = realClock()
+  text(CX, y, string.format("Realny cas: %s  %s %+d min",
+    rc, clockSource, cfg.clockOffset), MUTED, BG); y = y + 1
   -- monitor a speaker uz nejsou v Zarizeni, kdyz funguji
   text(CX, y, "Monitor: " .. tostring(cfg.monitorSide) ..
     " " .. W .. "x" .. H, MUTED, BG); y = y + 1
