@@ -315,12 +315,23 @@ end
 
 -- Realny cas, ne herni. Herni hodiny pri spanku preskoci o pul dne
 -- a razitka v logu by prestala davat smysl.
-local function realClock()
+local function realEpoch()
   local ok, ms = pcall(os.epoch, "local")
-  if not ok or type(ms) ~= "number" then ms = os.epoch("utc") end
-  local s = math.floor(ms / 1000)
+  if ok and type(ms) == "number" then return ms end
+  return os.epoch("utc")
+end
+
+local function realClock()
+  local s = math.floor(realEpoch() / 1000)
   return string.format("%02d:%02d:%02d",
     math.floor(s / 3600) % 24, math.floor(s / 60) % 60, s % 60)
+end
+
+-- realny cas za zadany pocet sekund, bez sekund; pro chat, kde herni
+-- hodiny nikomu nic nerikaji
+local function realClockIn(sec)
+  local s = math.floor(realEpoch() / 1000 + (sec or 0))
+  return string.format("%02d:%02d", math.floor(s / 3600) % 24, math.floor(s / 60) % 60)
 end
 
 -- dir: "out" = PC1 -> protejsek, "in" = protejsek -> PC1, jinak PC1 sam
@@ -398,8 +409,11 @@ local function checkAlarm()
     if soundOn then playAlarm() end
 
     if chatOn then
-      local ok, why = chatSay(("Můžeš spát - noc končí v %s (zbývá %s)")
-        :format(tickToClock(cfg.sleepEnd), fmtLong(realSecondsUntil(cfg.sleepEnd + 1))))
+      -- realny cas, ne herni: do chatu se kouka i clovek, ktery na
+      -- monitor nevidi a herni hodiny nema jak zjistit
+      local left = realSecondsUntil(cfg.sleepEnd + 1)
+      local ok, why = chatSay(("Můžeš spát - konec noci ve %s, tedy za %s")
+        :format(realClockIn(left), fmtLong(left)))
       if not ok then
         addLog({ level = "warn", text = "chat: " .. tostring(why) })
       end
@@ -1002,8 +1016,12 @@ local quarry = {
   -- jinak prepnuti vzdy zahodilo nasbirane vzorky a odhad by se
   -- pokazde pocital znovu od nuly.
   hist     = {},      -- [key] = { samples = {...}, cur = <data> }
-  shortWin = 30000,
-  longWin  = 300000,
+  -- Vrstva ma desetitisice bloku, takze se postup hne jednou za dlouho.
+  -- Petiminutove okno by vetsinou nevidelo zadnou zmenu a odhad by
+  -- neexistoval - proto vzorkujeme ridce a drzime dlouhou historii.
+  sampleEvery = 60000,     -- ms mezi vzorky pro vypocet rychlosti
+  longWin     = 7200000,   -- 2 hodiny historie (tedy max 120 vzorku)
+  minSpan     = 120,       -- min. sekund mereni, jinak zadny odhad
   tick     = 0,
   rr       = 0,       -- kolecko pro lokalni ctece (NBT je drahe)
   showList = true,    -- prehled vs. detail jedne quarry
@@ -1048,11 +1066,13 @@ local function quarryProgress(q, key)
   local layers = top - bot + 1
   local total  = sx * sz * layers
 
-  -- hotove vrstvy + pozice hlavy uvnitr rozdelane vrstvy
+  -- Pocitame VYHRADNE podle hotovych vrstev. Drive se k tomu pricitala
+  -- pozice hlavy uvnitr rozdelane vrstvy, jenze quarry projizdi vrstvu
+  -- tam a zpet - ten clen tedy kmital od nuly do plne vrstvy a zpet.
+  -- Na procenta to melo vliv setiny, ale rychlost z nej vychazela
+  -- nahodne, casto zaporna, a odhad se pak vubec neukazal.
   local done = (top - (q.hy or top)) * sx * sz
-  local ix = math.min(math.max((q.hx or q.minX) - q.minX, 0), sx - 1)
-  local iz = math.min(math.max((q.hz or q.minZ) - q.minZ, 0), sz - 1)
-  done = math.min(math.max(done + ix * sz + iz, 0), total)
+  done = math.min(math.max(done, 0), total)
 
   return done, total, sx, sz, layers, bot
 end
@@ -1133,9 +1153,13 @@ local function updateOne(src, now)
   local done = quarryProgress(q, src.key)
   if not done then return end
 
-  -- vzorky pridavame jen z cerstvych dat, jinak by zmrzly stav
-  -- stahoval tempo k nule a odhad by se rozjel
-  h.samples[#h.samples + 1] = { t = now, done = done }
+  -- Vzorky pridavame jen z cerstvych dat, jinak by zmrzly stav
+  -- stahoval tempo k nule a odhad by se rozjel. Ridce, protoze
+  -- postup se meni az pri dokonceni vrstvy.
+  local lastS = h.samples[#h.samples]
+  if not lastS or (now - lastS.t) >= quarry.sampleEvery then
+    h.samples[#h.samples + 1] = { t = now, done = done }
+  end
   while #h.samples > 1 and now - h.samples[1].t > quarry.longWin do
     table.remove(h.samples, 1)
   end
@@ -1176,23 +1200,21 @@ local function sampleQuarry()
 end
 
 -- vytezenych bloku za sekundu pro konkretni zdroj
-local function quarryRate(key, windowMs)
+-- Prumerna rychlost od nejstarsiho drzeneho vzorku po posledni.
+-- Klouzave kratke okno tu nema smysl - mezi dvema vrstvami se postup
+-- nehne vubec a vyslo by z nej nulove tempo.
+local function quarryRate(key)
   local h = quarry.hist[key]
   local s = h and h.samples
   local n = s and #s or 0
   if n < 2 then return nil end
 
-  local cutoff = s[n].t - (windowMs or quarry.shortWin)
-  local first = n
-  for i = n, 1, -1 do
-    if s[i].t < cutoff then break end
-    first = i
-  end
-  if first >= n then return nil end
+  local dt = (s[n].t - s[1].t) / 1000
+  if dt < quarry.minSpan then return nil end
 
-  local dt = (s[n].t - s[first].t) / 1000
-  if dt < 5 then return nil end
-  return (s[n].done - s[first].done) / dt, dt
+  local d = s[n].done - s[1].done
+  if d <= 0 then return nil, dt end   -- jeste zadna dokoncena vrstva
+  return d / dt, dt
 end
 
 -- odhad jako HH:MM pro velke cislice; nad 99 hodin uz se nevejde
@@ -1207,7 +1229,7 @@ local function quarryEta(key)
   local h = quarry.hist[key]
   local done, total = quarryProgress(h and h.cur, key)
   if not done then return nil end
-  local r = quarryRate(key, quarry.longWin) or quarryRate(key, quarry.shortWin)
+  local r = quarryRate(key)
   if not r or r <= 0 then return nil end
   return (total - done) / r
 end
@@ -1985,7 +2007,7 @@ local function pageQuarry()
 
   --=== odhad dotezeni cele quarry: hlavni cislo teto stranky ===--
   local eta = quarryEta(src.key)
-  local avg, avgDt = quarryRate(src.key, quarry.longWin)
+  local avg, avgDt = quarryRate(src.key)
 
   if p >= 1 then
     fill(CX, y + 1, CW, 1, BG)
@@ -2022,6 +2044,12 @@ local function pageQuarry()
     elseif avg then
       text(CX, y, string.format("podle %.0f bl/s za %s", avg, fmtLong(avgDt)),
         colors.gray, BG)
+    elseif avgDt then
+      -- merime, ale jeste neni hotova ani jedna vrstva
+      text(CX, y, "merim " .. fmtLong(avgDt) .. ", cekam na vrstvu",
+        colors.gray, BG)
+    else
+      text(CX, y, "sbiram data", colors.gray, BG)
     end
     textRight(CX, CW, y, "hlava Y " .. tostring(q.hy), colors.gray, BG)
     y = y + 1

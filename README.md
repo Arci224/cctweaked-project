@@ -265,9 +265,15 @@ na jednotce nezávislé.
 - Bouřka ve vanille dovolí spát i přes den; CC nemá API na počasí,
   takže to hodiny nepoznají.
 - Font CC:Tweaked neumí českou diakritiku, texty jsou bez háčků.
-- Odhad dotěžení quarry je lineární extrapolace z posledních 5 minut.
-  Sedí, dokud je tempo konstantní — vrstvy s velkým podílem vzduchu
-  (jeskyně, povrch) proletí rychleji a odhad se pak prodlouží.
+- Postup quarry se počítá **jen podle dokončených vrstev**, proto se
+  procenta hýbou skokem po 1/138. Pozice hlavy uvnitř vrstvy se
+  nezapočítává — quarry vrstvu projíždí tam a zpět, takže by z toho
+  vycházela náhodná, často záporná rychlost.
+- Odhad se tím pádem objeví až po dokončení první vrstvy od spuštění
+  aplikace. Do té doby píše, jak dlouho už měří.
+- Odhad je lineární extrapolace. Sedí, dokud je tempo konstantní —
+  vrstvy s velkým podílem vzduchu (jeskyně, povrch) proletí rychleji
+  a odhad se pak prodlouží.
 - Když quarry nemá nastavené `digMinY`, spodní hranice se odhaduje a
   přímo škáluje celkový objem. **Overworld má dno v −64, Nether a End
   v 0** — nastavuje se pro každý stroj zvlášť na jeho detailu.
