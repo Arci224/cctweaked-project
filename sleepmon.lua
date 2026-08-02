@@ -1213,18 +1213,19 @@ end
 -- Prumerna rychlost od nejstarsiho drzeneho vzorku po posledni.
 -- Klouzave kratke okno tu nema smysl - mezi dvema vrstvami se postup
 -- nehne vubec a vyslo by z nej nulove tempo.
+-- vraci: rychlost, delka mereni (s), vytezeno za tu dobu (bloku)
 local function quarryRate(key)
   local h = quarry.hist[key]
   local s = h and h.samples
   local n = s and #s or 0
-  if n < 2 then return nil end
+  if n < 2 then return nil, 0, 0 end
 
   local dt = (s[n].t - s[1].t) / 1000
-  if dt < quarry.minSpan then return nil end
+  local d  = s[n].done - s[1].done
 
-  local d = s[n].done - s[1].done
-  if d <= 0 then return nil, dt end   -- jeste zadna dokoncena vrstva
-  return d / dt, dt
+  if dt < quarry.minSpan then return nil, dt, 0 end
+  if d <= 0 then return nil, dt, 0 end   -- jeste zadna dokoncena vrstva
+  return d / dt, dt, d
 end
 
 -- odhad jako HH:MM pro velke cislice; nad 99 hodin uz se nevejde
@@ -2043,7 +2044,7 @@ local function pageQuarry()
 
   --=== odhad dotezeni cele quarry: hlavni cislo teto stranky ===--
   local eta = quarryEta(src.key)
-  local avg, avgDt = quarryRate(src.key)
+  local avg, avgDt, avgBlocks = quarryRate(src.key)
 
   if p >= 1 then
     fill(CX, y + 1, CW, 1, BG)
@@ -2071,31 +2072,35 @@ local function pageQuarry()
     end
   end
 
-  -- na cem odhad stoji; bez toho nejde poznat, jak moc mu verit
+  -- Na cem odhad stoji. Dokud nedobehne ani jedna vrstva, neni z ceho
+  -- pocitat - tak at je aspon videt, jak dlouho uz se meri.
   if y <= H - 1 then
     if stale then
       local age = hist.lastOk and (os.epoch("utc") - hist.lastOk) / 1000
       text(CX, y, "posledni data pred " ..
         (age and fmtLong(age) or "?"), BAD, BG)
     elseif avg then
-      text(CX, y, string.format("podle %.0f bl/s za %s", avg, fmtLong(avgDt)),
+      text(CX, y, string.format("%.0f bl/s z %d vrstev za %s",
+        avg, math.floor(avgBlocks / (sx * sz) + 0.5), fmtLong(avgDt)),
         colors.gray, BG)
-    elseif avgDt then
-      -- merime, ale jeste neni hotova ani jedna vrstva
-      text(CX, y, "merim " .. fmtLong(avgDt) .. ", cekam na vrstvu",
-        colors.gray, BG)
+    elseif avgDt < quarry.minSpan then
+      text(CX, y, string.format("merim %s (min %s)",
+        fmtLong(avgDt), fmtLong(quarry.minSpan)), colors.gray, BG)
     else
-      text(CX, y, "sbiram data", colors.gray, BG)
+      text(CX, y, "merim " .. fmtLong(avgDt) .. ", hotovych vrstev 0",
+        colors.gray, BG)
     end
-    textRight(CX, CW, y, "hlava Y " .. tostring(q.hy), colors.gray, BG)
     y = y + 1
   end
 
-  -- vlastni energeticky buffer stroje
-  if q.energy and q.maxEnergy and q.maxEnergy > 0 and y <= H - 1 then
-    local bp = q.energy / q.maxEnergy
-    text(CX, y, "Buffer:", MUTED, BG)
-    text(CX + 9, y, string.format("%.1f %%", bp * 100), pctColor(bp), BG)
+  -- vlastni buffer stroje a poloha hlavy
+  if y <= H - 1 then
+    if q.energy and q.maxEnergy and q.maxEnergy > 0 then
+      local bp = q.energy / q.maxEnergy
+      text(CX, y, "Buffer:", MUTED, BG)
+      text(CX + 9, y, string.format("%.1f %%", bp * 100), pctColor(bp), BG)
+    end
+    textRight(CX, CW, y, "hlava Y " .. tostring(q.hy), colors.gray, BG)
     y = y + 1
   end
 
