@@ -2527,10 +2527,27 @@ function draw()
 
   -- postranni menu
   fill(1, 2, SIDEBAR, H - 1, BG)
+
+  -- Zalozka Baterie se ukazuje az kdyz nejaka baterie existuje.
+  -- Kod za ni zustava, jen nezabira misto v menu.
+  local pages = {}
+  for _, p in ipairs(PAGES) do
+    if p.id ~= "bat" or #battery.list > 0 then
+      pages[#pages + 1] = p
+    end
+  end
+
+  -- kdyby prave zobrazena zalozka zmizela, spadneme na Prehled
+  local visible = false
+  for _, p in ipairs(pages) do
+    if p.id == state.page then visible = true break end
+  end
+  if not visible then state.page = "dash" end
+
   local by = 3
   -- na nizkem monitoru zhustime menu na kazdy radek
-  local step = (3 + (#PAGES - 1) * 2 <= H - 2) and 2 or 1
-  for _, p in ipairs(PAGES) do
+  local step = (3 + (#pages - 1) * 2 <= H - 2) and 2 or 1
+  for _, p in ipairs(pages) do
     local sel = (state.page == p.id)
     local bg = sel and colors.lightBlue or PANEL
     if p.id == "dev" and probs > 0 and not sel then bg = colors.red end

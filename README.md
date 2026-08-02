@@ -251,6 +251,23 @@ V **Info** je vidět, ze kterého zdroje se čas bere (`local` nebo `utc`)
 a jaký posun je nastavený. Když je zdroj `utc`, server nehlásí své
 pásmo a rozdíl bude celé hodiny.
 
+## Baterie
+
+Záložka **Baterie** se v menu objeví, až když se nějaká zásoba najde —
+lokálně na kabelu nebo hlášená vysílačem. Bez baterie tam nezabírá
+místo, ale kód za ní zůstává funkční.
+
+Detekce jde podle schopností bloku, ne podle modu: `getEnergy` plus
+`getEnergyCapacity` (CC generic, FE) nebo `getMaxEnergy` (nativní
+metoda modu, jednotka může být jiná). Připojení je stejné jako
+u ostatních — přímo k počítači, nebo přes wired modem.
+
+U Mekanism **Induction Matrix** se energie čte z Induction Portu, ne
+ze samotné Induction Cell. Je hlášená chyba, že `getEnergy` a
+`getMaxEnergy` vrací hodnoty za jednu celu místo za celek; procenta
+a odhad výdrže to nerozbije, protože obojí je zkreslené stejně, ale
+absolutní čísla ano. Ověř `scan`em proti GUI matice.
+
 ## Alias stanoviště
 
 Na vzdáleném počítači stiskni **A** a napiš jméno (max 16 znaků).
